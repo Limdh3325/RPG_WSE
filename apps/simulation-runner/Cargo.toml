@@ -1,0 +1,17 @@
+[package]
+name = "simulation-runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap.workspace = true
+ecs-components = { path = "../../crates/ecs-components" }
+game-domain = { path = "../../crates/game-domain" }
+serde_json.workspace = true
+simulation-core = { path = "../../crates/simulation-core" }
+simulation-systems = { path = "../../crates/simulation-systems" }
+
+[lints]
+workspace = true

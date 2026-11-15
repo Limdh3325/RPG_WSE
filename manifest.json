@@ -1,0 +1,227 @@
+{
+  "title": "RPG World Simulation Engine HLD/LLD",
+  "baseline_date": "2026-11-09",
+  "docs": 22,
+  "languages": {
+    "ko": {
+      "readme": "README.md",
+      "docs": "docs"
+    },
+    "en": {
+      "readme": "README.en.md",
+      "docs": "docs/en"
+    }
+  },
+  "generator": "scripts/sync-design-docs.mjs",
+  "files": {
+    "README.en.md": {
+      "sha256": "6532209c424c1a606e12cd55f5630a8cfd4d23fcfe2b875cc64b29d7d972495f",
+      "bytes": 17335
+    },
+    "README.md": {
+      "sha256": "bec7989bb7d970e243135e9f703be3e5e1c3feebd18c2076cd29cb75d91d9a52",
+      "bytes": 21040
+    },
+    "RPG_WSE_Complete_Design.en.md": {
+      "sha256": "a4421ef2ab6546768e0bc0d7b1b244e239fd08775bb78f5dba1bd1b818b8d6d2",
+      "bytes": 153010
+    },
+    "RPG_WSE_Complete_Design.md": {
+      "sha256": "5e4e19886ad4cd58dc9b682ecd570f5dc747b6666f280552e3339725216be975",
+      "bytes": 161569
+    },
+    "docs/00-vision-scope.md": {
+      "sha256": "e896f769f16f96bd3c6651cec1f6d7409ffb9a99f1cc4a5c8ef5424f03c2aa52",
+      "bytes": 4060
+    },
+    "docs/01-requirements.md": {
+      "sha256": "f65148b4c49a15d53b8889ddef58255cf6399f4a64d58a254783d9ceadca3fe2",
+      "bytes": 4032
+    },
+    "docs/02-hld-architecture.md": {
+      "sha256": "8958b9b606bf0646161eefedb76d48e3b3bf41b97ef65381d2d466177947d6d4",
+      "bytes": 5640
+    },
+    "docs/03-core-tick.md": {
+      "sha256": "7a443686f692ee3b78fa91d12fd1714ce3969c5614d9e9202f767b05bef3acbf",
+      "bytes": 6652
+    },
+    "docs/04-region-ecs.md": {
+      "sha256": "054ba5814a174d573a5bba550def5d69634781e517a5e47eb1b60fcc219a0331",
+      "bytes": 5810
+    },
+    "docs/05-command-event.md": {
+      "sha256": "275c29f3a49fb7694fc4090a293c7ca44bed02a566d323876b5b853238c22ce9",
+      "bytes": 5270
+    },
+    "docs/06-npc-ai.md": {
+      "sha256": "e0882c355fecaf39fa3a9ea1eaeed29a56c369b81ca1b06129256e9d7e33fc0f",
+      "bytes": 7500
+    },
+    "docs/07-world-systems.md": {
+      "sha256": "8f72eb994db56606b777a41d6f18178747d93e051bea8db14f82010746984579",
+      "bytes": 6311
+    },
+    "docs/08-data-erd.md": {
+      "sha256": "3e7e8c3df625e11d88e6bf9343641bfebd4ed2b8fa177046b87f880bb30e81ac",
+      "bytes": 5041
+    },
+    "docs/09-persistence-recovery.md": {
+      "sha256": "9fe12a8972a53bfdc9baaf1a08f5d4c4fb2ee0aee04922fab48aed92d216cc62",
+      "bytes": 6898
+    },
+    "docs/10-network-replication.md": {
+      "sha256": "d4d4ca54b4a23dfd75f89c4d5367386789728e16d9b00590b75a73d6b1f2dc9e",
+      "bytes": 4630
+    },
+    "docs/11-protocols.md": {
+      "sha256": "83fece51292784ced77f17c61a28f61f74998401c2abcd5682ac4fabc4627202",
+      "bytes": 5399
+    },
+    "docs/12-test-observability.md": {
+      "sha256": "9852d22898a9c52d849ee1d39340efa5e26383dbd018f465d23e208a6764a8b3",
+      "bytes": 5377
+    },
+    "docs/13-implementation-backlog.md": {
+      "sha256": "6a56f802fae2759088efd50cea00d56deb6f105d07c367dc7ebba269736347fa",
+      "bytes": 6163
+    },
+    "docs/14-operations-security.md": {
+      "sha256": "1507c79484ade16101572deb711a7df5607d1b6330b5a6337406f6ba3f3cdd34",
+      "bytes": 4667
+    },
+    "docs/15-adrs.md": {
+      "sha256": "942c076b12690876a0bfb3e1825055e4a4ec2b2822942394afd4f2ba3cb1de3b",
+      "bytes": 4106
+    },
+    "docs/16-prologue-gameplay.md": {
+      "sha256": "15a071cff3588e2ce9da773b404ee16ebfe2d50f4bfb09c17154a1d812c09eda",
+      "bytes": 3588
+    },
+    "docs/17-developer-onboarding.md": {
+      "sha256": "08f43eccaafbaa5bdecdaed274b6eb5fae10cc51d9a30ddeea2d067050c191eb",
+      "bytes": 4848
+    },
+    "docs/18-end-to-end-example.md": {
+      "sha256": "59daceb5cb68250780bac2782bb1865caf5d7b023f2b12ee3682ffd1553d14de",
+      "bytes": 4868
+    },
+    "docs/19-nmain-development-plan.md": {
+      "sha256": "92e8634d20fc062145c91a691f075a94e9488226e204f817a2c6921522c47d7c",
+      "bytes": 20460
+    },
+    "docs/20-development-status.md": {
+      "sha256": "65c955f46e4ae79220b461064809a1fec44555fac2b339a68d67da9a264fc58b",
+      "bytes": 2464
+    },
+    "docs/21-m0-bootstrap-decisions.md": {
+      "sha256": "51bdc7b7f829b8ad4ff9aee5f81947660e81d18beb21ede3fe3fd65fed49d779",
+      "bytes": 2963
+    },
+    "docs/README.md": {
+      "sha256": "d1bd158455c4f7669027b853ffbd9e8a0a455ff2733f494b63b1d1b805d1872c",
+      "bytes": 3717
+    },
+    "docs/en/00-vision-scope.md": {
+      "sha256": "005eb2365a06021d29eae74e9c36b08e73f0f4cbeece2b7a745cf74f8652fab0",
+      "bytes": 4116
+    },
+    "docs/en/01-requirements.md": {
+      "sha256": "c818d7087e7bdbfc76e85c40555458abe93c80e2bee01bb39c3ea14d747cfc04",
+      "bytes": 4013
+    },
+    "docs/en/02-hld-architecture.md": {
+      "sha256": "e8fb17b1dc9cd752014be17c902504b25ec38b330be28f13484fdc4b953f670a",
+      "bytes": 5579
+    },
+    "docs/en/03-core-tick.md": {
+      "sha256": "fa7103cc0b8c581a8d8a0e41c37c115c66a5d185baa150a6e5d67c52465348aa",
+      "bytes": 6380
+    },
+    "docs/en/04-region-ecs.md": {
+      "sha256": "62c149cac7e3974d9b3326ba56e620990ebc89751a9e8994da330f2792fb99a4",
+      "bytes": 5714
+    },
+    "docs/en/05-command-event.md": {
+      "sha256": "50522ac15f9899caa2b70b86b5100e875c920ce026fcc2cdc342fc93d477cb68",
+      "bytes": 5267
+    },
+    "docs/en/06-npc-ai.md": {
+      "sha256": "aeffbc2ff6db7dd5a2d7a7f027d3d29c07f321aabda7e861018a559940ee49b4",
+      "bytes": 7189
+    },
+    "docs/en/07-world-systems.md": {
+      "sha256": "ee00ef04107fe80abddea06c43342c3ca1f679c2a353026cf49112dc5de95ae1",
+      "bytes": 6262
+    },
+    "docs/en/08-data-erd.md": {
+      "sha256": "b8b4c16658ce7488b2538aa81f6c381c5fd007a5ecb448c762c699f8fec0fad4",
+      "bytes": 4945
+    },
+    "docs/en/09-persistence-recovery.md": {
+      "sha256": "9c83342e58a21deb5d97be246cf7d667bac7ad5d853a89173c98d2b0ee27afe4",
+      "bytes": 6583
+    },
+    "docs/en/10-network-replication.md": {
+      "sha256": "6a60a6fdf03a6bcb0fa9f51ea7ddb90ae1b55e41c4543bef5c903cb775a719b5",
+      "bytes": 4403
+    },
+    "docs/en/11-protocols.md": {
+      "sha256": "9419208ad73f547368ce677e73f4b3dcb6c04d0ae25ec5204b07c4eef17399ca",
+      "bytes": 5297
+    },
+    "docs/en/12-test-observability.md": {
+      "sha256": "edbae1a60ddbd53799f79fce7d42ae7c313eb2ea1ede4b941d0e407d348b1245",
+      "bytes": 5283
+    },
+    "docs/en/13-implementation-backlog.md": {
+      "sha256": "a5034ace11201d8facc996e27592eb920c616daa550feeb4eea16fade78ea8d5",
+      "bytes": 6163
+    },
+    "docs/en/14-operations-security.md": {
+      "sha256": "681d36e90d925303bde2b3a4bf55267b81ec159cf58058e3cbfab8f0346b0db1",
+      "bytes": 4500
+    },
+    "docs/en/15-adrs.md": {
+      "sha256": "643e72bfc9b1c96b0f988c67d5c958eff433336480fb7042936dcc16e4232040",
+      "bytes": 3935
+    },
+    "docs/en/16-prologue-gameplay.md": {
+      "sha256": "70c1d306938c3df59e3567cc098e430a708a0d9004a300760d8f1507a37847c1",
+      "bytes": 3270
+    },
+    "docs/en/17-developer-onboarding.md": {
+      "sha256": "5ab93dc0e9a93972dd87f17d52c3528fe6354d884ba6887be7b7918ebe0d0d83",
+      "bytes": 4375
+    },
+    "docs/en/18-end-to-end-example.md": {
+      "sha256": "b34bb3ac50de75ddbc46e164eef92f7e8549bd0e8be56e52fe22da1beba57fb4",
+      "bytes": 4446
+    },
+    "docs/en/19-nmain-development-plan.md": {
+      "sha256": "90c2d36d82ccde35c9b339659e8fef7133d4e40241eabd5c3d3efdc71a300f96",
+      "bytes": 18949
+    },
+    "docs/en/20-development-status.md": {
+      "sha256": "a89099194f3b10bd90d2c06e470edf18d0aa3137297b5f58c14b27071d03568f",
+      "bytes": 2479
+    },
+    "docs/en/21-m0-bootstrap-decisions.md": {
+      "sha256": "849b65f1f2624d804d6c10bf898d4588979697db79be82f465f7c001e8bccdef",
+      "bytes": 2728
+    },
+    "docs/en/README.md": {
+      "sha256": "ca940148cfc3b087f5e49cf1b45e50536821169edffb2e3ecfeb3fe41bbef07b",
+      "bytes": 3629
+    },
+    "schemas/0001_initial.sql": {
+      "sha256": "7266ca7c18b9437e619a38c205e3013d4abab12c45be1ee2d6036ac1870eab43",
+      "bytes": 11265
+    },
+    "schemas/config.example.toml": {
+      "sha256": "114435a413d8a7c6fadcf85478e6ec5c239b4f4b883539f8bb40ce4b1ab33fbd",
+      "bytes": 925
+    }
+  },
+  "hash_normalization": "UTF-8; LF line endings; one final newline"
+}
