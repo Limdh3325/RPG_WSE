@@ -1,5 +1,7 @@
 # 04. Region Worker · ECS · Ownership (LLD)
 
+**한국어** | [English](en/04-region-ecs.md)
+
 ## 1. Region 소유권 모델
 
 - 각 Region은 정확히 **하나의 Active Owner**만 갖는다.

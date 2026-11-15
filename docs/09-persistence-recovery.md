@@ -1,5 +1,7 @@
 # 09. Persistence · Transaction · Snapshot · Recovery (LLD)
 
+**한국어** | [English](en/09-persistence-recovery.md)
+
 ## 1. 보장 수준 명시
 
 | 상태 | 보장 | 근거 |

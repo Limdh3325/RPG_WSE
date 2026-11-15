@@ -1,5 +1,7 @@
 # 11. 외부 API와 프로토콜 계약 (LLD)
 
+**한국어** | [English](en/11-protocols.md)
+
 ## 1. 일반 Envelope
 
 모든 메시지에 `protocol_version = 1` 및 메시지 ID를 포함한다. 예시 UUID는 설명용.

@@ -1,5 +1,7 @@
 # nmain 신규 개발 상세 실행 계획
 
+**한국어** | [English](en/19-nmain-development-plan.md)
+
 작성일: 2026-11-09 (Asia/Seoul)
 상태: 구현 착수용 계획. 최신 진행 상태는 20-development-status.md와 outbox 완료 보고서를 참조한다.
 

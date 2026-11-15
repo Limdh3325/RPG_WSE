@@ -1,5 +1,7 @@
 # 14. 운영 · 보안 · 배포 · 장애 대응
 
+**한국어** | [English](en/14-operations-security.md)
+
 ## 1. 배포 방식
 
 **MVP:** Docker Compose 또는 단일 서버 프로세스 + PostgreSQL, 개별 game-server Tokio runtime과 Region Worker threads. K8s는 필요 시 도입; 초기에 DB/실시간 Tick/여러 서비스 간 분산 복잡도 증가를 피한다.

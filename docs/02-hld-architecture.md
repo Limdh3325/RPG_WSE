@@ -1,5 +1,7 @@
 # 02. 전체 아키텍처 (HLD)
 
+**한국어** | [English](en/02-hld-architecture.md)
+
 ## 1. 컨텍스트 / 주요 외부 시스템
 
 ```mermaid

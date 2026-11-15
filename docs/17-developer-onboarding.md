@@ -1,5 +1,7 @@
 # 17. 신규 개발자 온보딩 · 작업 시작 가이드
 
+**한국어** | [English](en/17-developer-onboarding.md)
+
 ## 1. 이 문서로 합류한 개발자의 첫 작업
 
 ### Step 1. 게임 의도·범위 확인
@@ -23,7 +25,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-**주의:** 현재 패키지는 설계 문서 세트이며 Cargo 구현 프로젝트가 아닙니다. `Cargo.toml` Workspace/실제 코드는 `TASK-001` 수행 후 생성해야 합니다. Rust 및 SQLx의 세부 버전은 첫 구현 PR에서 lock으로 고정하십시오.
+**설계 작성 당시 안내:** 최초 패키지는 Cargo 구현 전의 설계 문서 세트였으며 TASK-001에서 Workspace를 만들고 Rust/SQLx 버전을 고정하도록 계획했습니다. 현재 체크아웃에는 Workspace가 있으므로 실제 실행 방법과 제한은 [루트 README](../README.md)를 따르세요.
 
 ### Step 3. 첫 작업 선정
 

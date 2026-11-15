@@ -1,5 +1,7 @@
 # 03. 시뮬레이션 코어와 Fixed Tick (LLD)
 
+**한국어** | [English](en/03-core-tick.md)
+
 ## 1. 실행 계약
 
 - `tick_rate_hz = 10`, `fixed_delta_ms = 100` (**[가정]**). 게임 시간 배율(`game_seconds_per_real_second=10`)은 별도 설정.

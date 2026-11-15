@@ -1,5 +1,7 @@
 # 12. 테스트 전략 · 벤치마크 · 관측성
 
+**한국어** | [English](en/12-test-observability.md)
+
 ## 1. 품질 게이트
 
 모든 TASK는 `unit → integration → deterministic → recovery → load` 중 해당 범위를 통과해야 한다. 실행하지 않은 테스트는 `NOT RUN`으로 명시하며, 예상 성능 수치를 실측치로 표현하지 않는다.

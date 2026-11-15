@@ -1,5 +1,7 @@
 # 08. 영속 데이터 모델 · ERD (LLD)
 
+**한국어** | [English](en/08-data-erd.md)
+
 ## 1. 데이터 소유권
 
 | 도메인 | SoT(진실 원천) | 캐시/Projection | 복구 |

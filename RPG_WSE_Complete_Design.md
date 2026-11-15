@@ -1,16 +1,22 @@
 # RPG World Simulation Engine — 통합 설계서
 
-> 자동 생성: README.md, docs/NN-*.md, schemas. 직접 편집하지 마세요.
+---
+
+> 한국어 README/docs 및 공통 schemas에서 자동 생성합니다. 직접 편집하지 마세요.
 
 ---
 
 <!-- source: README.md -->
 
-# RPG World Simulation Engine — 설계 문서 패키지
+# RPG World Simulation Engine (RPG-WSE)
 
-> 문서 ID **RPG-WSE**, 기준일 **2026-11-09**, 상태 **설계 기준선 v1.0 / M0 개발 기반 구현**
+**한국어** | [English](README.en.md)
+
+> Rust 기반 실시간·지속형 RPG 시뮬레이션 엔진입니다. 현재 개발 중인 프로토타입으로, 설계 목표와 구현·통합 완료 여부를 구분합니다.
 > 기술: **Rust + Bevy ECS + Tokio + Axum + PostgreSQL + Vue 3/Phaser**
 > 대상: 새로운 실시간·지속형 중세 판타지 RPG 시뮬레이션. 기존 저장소와의 호환성은 가정하지 않는다.
+
+처음 참여한다면 아래 **빠른 시작 → 저장소 구조 → 변경 검증 → 기여 방법** 순서로 읽어 주세요. [한국어 문서 목록](docs/README.md)과 [English documentation](docs/en/README.md)에서 전체 문서를 찾을 수 있습니다.
 
 ## 0. 먼저 읽기
 
@@ -64,53 +70,274 @@
 
 `REQ-*` 요구사항, `ADR-*` 아키텍처 결정, `TASK-*` 구현 작업, `TEST-*` 테스트를 ID로 참조한다. **[확정]**은 기준선, **[가정]**은 초기값, **[추후]**는 별도 결정 필요. 코드 블록은 계약/예시이며 전체 서버 구현이나 빌드 통과를 보장하지 않는다. 모든 메시지는 `schema_version`을 보유한다. 문서 간 모순이 생기면 `15-adrs.md`의 결정과 `09-persistence-recovery.md`의 원자성 규칙을 우선하고 변경 이력을 기록한다.
 
-## 5. 검증 및 주의
+한국어 원본은 `README.md`와 `docs/NN-*.md`, 영어 버전은 `README.en.md`와 `docs/en/NN-*.md`입니다. 두 언어의 ID·명령·설정값·인수 기준을 함께 유지합니다. [문서 관리 안내](docs/README.md)를 참고하세요.
 
-- `schemas/0001_initial.sql`은 PostgreSQL **16+**를 가정한 설계용 초기 마이그레이션이며 운영 적용 전에 빈 테스트 DB로 검증할 것.
-- Cargo 의존성은 실제 구현 시작 시 `Cargo.lock`으로 고정한다. 참조: [Bevy ECS API](https://docs.rs/bevy_ecs/latest/bevy_ecs/), [Tokio 채널](https://docs.rs/tokio/latest/tokio/sync/mpsc/), [SQLx](https://docs.rs/sqlx/latest/sqlx/), [Axum](https://docs.rs/axum/latest/axum/).
-- 문서 패키지 자체는 **설계 산출물**로, 실제 컴파일/DB 마이그레이션/성능 검증을 수행한 결과물은 아니다. 미구현 기능을 구현 완료라고 표시하지 않는다.
+## 5. 현재 구현 범위와 제한
 
-## 6. nmain M0 개발 시작
+아래는 현재 소스의 진입점과 모듈 구성을 기준으로 한 안내입니다. 코드가 존재한다는 사실이 통합 검증이나 운영 준비 완료를 의미하지는 않습니다.
 
-현재 구현은 **Rust 워크스페이스·설정 로더·HTTP 상태 확인·Runner CLI·CI 기반**까지다.
-게임 시뮬레이션과 DB 저장은 아직 구현하지 않았다.
-상세 순서는 [개발 계획](docs/19-nmain-development-plan.md),
-완료 상태는 [작업 추적표](docs/20-development-status.md),
-환경 결정은 [M0 ADR](docs/21-m0-bootstrap-decisions.md)을 따른다.
+| 영역 | 현재 상태 |
+|---|---|
+| 헤드리스 Runner | seed와 Tick 수를 받아 시뮬레이션을 실행하고 상태 hash·이벤트 수·경제 요약을 JSON으로 출력 |
+| 서버 | 설정 검증, HTTP health, WebSocket ticket·gateway 경로 제공 |
+| 도메인·시뮬레이션 | ECS, Command/Event, 이동·전투·NPC·경제·프롤로그 코드와 테스트 포함 |
+| 영속성 | PostgreSQL 거래·snapshot·복구 모듈과 DB 통합 테스트 포함. 기본 서버 진입점은 DB 연결/전체 시뮬레이션 초기화를 수행하지 않음 |
+| 웹 클라이언트 | Vue 3 + TypeScript + Phaser UI와 통신 코드 포함. 로컬 연결에는 API/WS 프록시 설정 필요 |
+| readiness | `/health/ready`는 현재 항상 **503**. 전체 게임의 준비 완료를 나타내지 않음 |
 
-- 새 엔진: `apps/`, `crates/`, 루트 `Cargo.toml`
-- 새 개발 DB: [deploy/compose.dev.yml](deploy/compose.dev.yml), PostgreSQL 16.11, 전용 볼륨·loopback 55432
-- 기존 루트 `docker-compose.yml`과 `src/`는 이전 게임 참조이며 새 엔진 실행 경로가 아니다.
-- `main`은 기존 게임을 보존하고 신규 개발은 `nmain`에서 진행한다.
-- 루트 README·분할 docs·schemas를 수정한 뒤 `python3 scripts/sync-design-docs.py`로 통합 문서와 manifest를 갱신한다.
+기본 gateway는 `GatewayState::default()`로 생성되며 시뮬레이션 명령 채널이 연결되지 않습니다. 서버와 UI를 각각 실행했다고 해서 이동·전투·영속 저장을 갖춘 전체 게임이 동작하는 것은 아닙니다. 프롤로그 파일 저장 기본 경로는 `.data/prologue`입니다.
 
-Rust 1.90.0과 Python 3가 준비된 저장소 루트에서:
+[개발 계획](docs/19-nmain-development-plan.md), [작업 추적표](docs/20-development-status.md), [M0 ADR](docs/21-m0-bootstrap-decisions.md)은 배경 자료입니다. 일부 문서에는 과거 M0 설명과 `nmain` 브랜치 정책이 남아 있으므로 실제 코드·현재 PR 대상 브랜치와 함께 확인하세요. 현재 체크아웃에는 과거 안내의 `scripts/verify-m0.sh`, `scripts/sync-design-docs.py`, `.github/workflows/wse-m0.yml`이 없습니다. 아래 개별 명령으로 검증하세요. 현재 문서 생성에는 `scripts/sync-design-docs.mjs`를 사용합니다.
+
+## 6. 빠른 시작
+
+### 준비물
+
+| 도구 | 용도 및 기준 |
+|---|---|
+| Git | 저장소 clone과 변경 관리 |
+| Rust / Cargo | `rust-toolchain.toml`에 고정된 **1.90.0**, rustfmt·clippy 포함 |
+| 네이티브 빌드 도구 | Windows MSVC는 Visual Studio Build Tools의 C++ 도구, Linux/macOS는 플랫폼에 맞는 빌드 도구 |
+| Node.js / npm | 웹 개발 시 필요. 정확한 Node 버전은 저장소에 아직 고정되지 않음. 사용 버전을 PR에 기록 |
+| Docker + Compose v2 | DB 통합 테스트 시 사용. Compose의 PostgreSQL 이미지는 16.11 |
+| Python 3 + websockets | 기존 브라우저 E2E 스크립트를 수정·실행할 때만 필요 |
+
+저장소를 Fork한 뒤 본인 Fork의 URL로 clone합니다. `<YOUR_FORK_CLONE_URL>`은 실제 주소로 바꾸세요. Rust 설치 후 rustup을 사용할 수 있는 터미널에서 실행합니다.
 
 ```sh
+git clone <YOUR_FORK_CLONE_URL> RPG_WSE
+cd RPG_WSE
+rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
 cargo build --workspace --locked
-cargo run --locked -p game-server -- --check-config
-cargo run --locked -p game-server
-# 다른 터미널: live는 200, ready는 미구현 상태를 나타내는 503
-curl http://127.0.0.1:18080/health/live
-curl -i http://127.0.0.1:18080/health/ready
-cargo run --locked -p simulation-runner -- --seed 42 --ticks 10000 --check
-sh scripts/verify-m0.sh
 ```
 
-Runner의 `--check`는 인자 검증만 수행하며 `executed_ticks=0`을 출력한다.
-실제 시뮬레이션 요청은 M1 구현 전까지 오류로 종료한다.
-서버는 TOML 다음 WSE 환경 변수 순서로 설정을 적용한다.
-예: `WSE_HTTP_LISTEN=127.0.0.1:19080 cargo run --locked -p game-server`.
+아래 Rust 명령은 모두 **저장소 루트**에서 실행합니다. 설정 파일의 기본 경로도 현재 작업 디렉터리를 기준으로 해석합니다.
 
-호스트에 Rust가 없으면 [Docker 검증 안내](deploy/README.md)를 사용한다.
-M0 CI 파일은 [.github/workflows/wse-m0.yml](.github/workflows/wse-m0.yml)이다.
-원격 GitHub CI 실행 여부는 완료 보고서에 별도 표시한다.
+### 서버 실행
+
+```sh
+cargo run --locked -p game-server -- --check-config
+cargo run --locked -p game-server
+```
+
+다른 터미널에서 확인합니다. Windows PowerShell에서는 `curl` 대신 `curl.exe`를 사용하세요.
+
+```sh
+curl -i http://127.0.0.1:18080/health/live
+curl -i http://127.0.0.1:18080/health/ready
+```
+
+예상 응답은 live **200**, ready **503**입니다. `--check-config`는 설정만 검사하고 종료하며 DB 연결이나 게임 실행을 검증하지 않습니다. 서버는 Ctrl+C로 종료합니다.
+
+### 헤드리스 시뮬레이션
+
+DB와 웹 클라이언트 없이 실행할 수 있습니다.
+
+```sh
+cargo run --locked -p simulation-runner -- --seed 42 --ticks 10000
+cargo run --locked -p simulation-runner -- --seed 42 --ticks 10000 --check
+```
+
+첫 명령은 실제 Tick을 실행하며 성공 시 `status: completed`, `executed_ticks`, `final_state_hash`, `economy` 등을 출력합니다. 두 번째는 인자 검증만 수행하며 `executed_ticks=0`입니다. 같은 버전·초기 상태·seed·입력 조건에서 반복 실행한 결과를 비교하세요. 최종 상태 hash 하나를 전체 경제 처리나 외부 시스템의 결정성 증거로 해석하지 마세요.
+
+### 웹 클라이언트
+
+별도 터미널에서 실행합니다. 루트가 아닌 `apps/web-client`의 package/lock 파일을 사용합니다.
+
+```sh
+cd apps/web-client
+npm ci
+npm run dev -- --host 127.0.0.1
+```
+
+`http://127.0.0.1:3000`에서 UI를 확인합니다. 포트가 사용 중이면 Vite 출력의 실제 URL을 확인하세요.
+
+현재 클라이언트는 페이지와 같은 origin으로 `/api/v1/ws-tickets`와 `/ws`를 요청하지만 Vite 설정에는 프록시가 없습니다. 서버 연결을 개발하려면 [vite.config.ts](apps/web-client/vite.config.ts)의 기존 `server` 객체에 다음 `proxy`를 추가할 수 있습니다. 서버 포트를 바꿨다면 target도 맞추세요.
+
+```ts
+proxy: {
+  '/api': { target: 'http://127.0.0.1:18080', changeOrigin: true },
+  '/ws': { target: 'ws://127.0.0.1:18080', ws: true, changeOrigin: true },
+},
+```
+
+변경 후 Vite를 재시작하세요. 이는 통신 경로를 연결하는 설정이며 앞서 설명한 서버의 게임 루프 통합 제한은 그대로 적용됩니다. UI의 초기 금화·인벤토리 등에는 샘플 값이 포함되어 있습니다.
+
+## 7. 저장소 구조
+
+| 경로 | 역할 |
+|---|---|
+| `apps/game-server` | 서버 진입점, TOML/환경 변수 설정 로더 |
+| `apps/simulation-runner` | 헤드리스 시뮬레이션 CLI |
+| `apps/web-client` | Vue/Phaser 화면, 통신 클라이언트, Vitest 테스트 |
+| `crates/game-domain` | 도메인 ID, Command/Event, 게임 규칙 계약 |
+| `crates/ecs-components` | ECS 컴포넌트와 Region world |
+| `crates/simulation-core` | Tick 실행, 결정성, Worker 기반 |
+| `crates/simulation-systems` | 이동·전투·NPC·경제·프롤로그 시스템 |
+| `crates/persistence` | DB 거래, lease, snapshot, 복구와 통합 테스트 |
+| `crates/networking` | Axum gateway, 세션, ticket, AOI, 상태 복제 |
+| `crates/shared-protocol` | 서버/클라이언트 wire protocol |
+| `schemas` | 초기 SQL과 서버 설정 예시 |
+| `deploy` | 개발용 PostgreSQL Compose와 환경 변수 예시 |
+| `docs` | 요구사항, 설계, ADR, 구현 백로그 |
+| `tests` | 브라우저 E2E 스크립트 |
+
+루트 `docker-compose.yml`은 이전 Go 게임용 참조입니다. 현재 체크아웃에 없는 `src/` 등을 참조하므로 신규 Rust 엔진 실행에는 사용하지 마세요.
+
+## 8. 설정
+
+서버는 기본적으로 [schemas/config.example.toml](schemas/config.example.toml)을 읽고 지원하는 환경 변수로 덮어씁니다. 다른 파일은 `cargo run --locked -p game-server -- --config <CONFIG_PATH>`로 지정합니다. 설정 검증 통과가 각 런타임 모듈의 설정 연결 완료를 뜻하지는 않습니다.
+
+| 환경 변수 | 기본값 | 의미 |
+|---|---|---|
+| `WSE_HTTP_LISTEN` | `127.0.0.1:18080` | HTTP/WS 수신 주소 |
+| `WSE_WS_AUTH_TIMEOUT_SEC` | `5` | 설정상 WS 인증 제한 시간 |
+| `WSE_TICK_RATE_HZ` | `10` | Tick 빈도 |
+| `WSE_GAME_TIME_SCALE` | `10` | 게임 시간 배율 |
+| `WSE_REGION_CMD_CAP` | `4096` | Region 명령 큐 용량 |
+| `WSE_DURABLE_CAP` | `512` | 영속 작업 큐 용량 |
+| `WSE_SNAPSHOT_INTERVAL_SEC` | `300` | snapshot 간격 |
+| `WSE_REGION_LEASE_SEC` | `15` | Region lease 기간 |
+| `WSE_LEASE_RENEW_SEC` | `5` | lease 갱신 간격 |
+| `RUST_LOG` | `info` | tracing 로그 필터 |
+| `PROLOGUE_DATA_DIR` | `.data/prologue` | gateway의 프롤로그 파일 저장 경로 |
+| `DATABASE_URL` | 명시적으로 지정 | PostgreSQL 통합 테스트 연결 문자열 |
+
+예를 들어 서버 포트를 바꾸려면:
+
+```sh
+# Bash / zsh
+WSE_HTTP_LISTEN=127.0.0.1:19080 cargo run --locked -p game-server
+```
+
+```powershell
+# PowerShell: 현재 터미널에 적용
+$env:WSE_HTTP_LISTEN = '127.0.0.1:19080'
+cargo run --locked -p game-server
+Remove-Item Env:WSE_HTTP_LISTEN
+```
+
+`deploy/.env`는 Docker Compose용입니다. Rust 서버가 이 파일을 자동으로 읽지는 않습니다. Tick 빈도는 1000ms를 나누어떨어지게 해야 하고 delta 빈도보다 작을 수 없습니다. lease 갱신 간격은 lease 기간보다 짧아야 합니다.
+
+## 9. 개발용 PostgreSQL
+
+영속성 작업에만 필요한 선택 단계입니다. 테스트 데이터를 기록하는 **전용 개발 DB**를 사용하세요.
+
+```sh
+# Bash / zsh: 최초 1회만 복사
+cp deploy/.env.example deploy/.env
+```
+
+```powershell
+# PowerShell: 최초 1회만 복사
+Copy-Item deploy/.env.example deploy/.env
+```
+
+`deploy/.env`의 `WSE_POSTGRES_PASSWORD`를 본인 개발용 값으로 바꾼 뒤 실행합니다.
+
+```sh
+docker compose --env-file deploy/.env -f deploy/compose.dev.yml up -d --wait
+docker compose --env-file deploy/.env -f deploy/compose.dev.yml ps
+```
+
+기본 접속은 `127.0.0.1:55432`, 사용자/DB는 `wse_dev`입니다. 테스트를 실행할 터미널에 연결 문자열을 설정하세요. 비밀번호 자리표시자를 실제 값으로 바꾸고 URI 특수문자는 percent-encoding하세요.
+
+```sh
+export DATABASE_URL='postgres://wse_dev:<YOUR_DEV_PASSWORD>@127.0.0.1:55432/wse_dev'
+```
+
+```powershell
+$env:DATABASE_URL = 'postgres://wse_dev:<YOUR_DEV_PASSWORD>@127.0.0.1:55432/wse_dev'
+```
+
+Compose는 SQL을 자동 적용하지 않습니다. 영속성 통합 테스트는 접속 후 `apply_migration`으로 초기 스키마를 적용합니다. 기존 DB 업그레이드 절차와 동일하게 취급하지 마세요.
+
+```sh
+cargo test --locked -p persistence --test durable_transactions -- --nocapture
+cargo test --locked -p persistence --test snapshot_recovery -- --nocapture
+# 종료: 볼륨 데이터는 유지
+docker compose --env-file deploy/.env -f deploy/compose.dev.yml down
+```
+
+**DB에 접속하지 못하면 현재 테스트는 실패 대신 skip 후 성공으로 보일 수 있습니다.** 출력에 `Skipping PostgreSQL integration test`가 없는지 확인하고 실제 DB 검증 여부를 PR에 별도로 기록하세요. 비밀번호를 바꿔도 기존 PostgreSQL 볼륨의 비밀번호는 자동 변경되지 않습니다.
+
+## 10. 변경 검증
+
+Rust 변경은 저장소 루트에서 실행합니다.
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo build --workspace --locked
+```
+
+웹 변경은 `apps/web-client`에서 실행합니다.
+
+```sh
+npm ci
+npm test
+npm run typecheck
+npm run build
+```
+
+필요한 모듈을 먼저 확인할 때는 `cargo test --locked -p simulation-core`처럼 패키지를 좁힐 수 있습니다. 결과를 보고할 때는 DB skip, 실행하지 않은 브라우저 검증, 실패 항목도 구분하세요. 위 명령은 검증 절차이며 현재 체크아웃의 통과 보증은 아닙니다.
+
+[브라우저 E2E](tests/e2e_two_clients_prologue.py)는 스크립트 위치를 기준으로 저장소 경로를 찾으며, 브라우저는 `CHROME_BIN` 또는 PATH에서 찾습니다. Chrome CDP 포트 9222와 preview 포트 4173을 사용하므로 브라우저 실행 옵션·API/WS 라우팅을 환경에 맞게 정리한 뒤 사용해야 합니다. 일반 Rust/Vitest 실행에 Python은 필요하지 않습니다.
+
+### 자주 겪는 문제
+
+| 증상 | 확인할 내용 |
+|---|---|
+| 설정 파일을 못 찾음 | 저장소 루트에서 실행했는지, `--config` 경로가 맞는지 확인 |
+| ready가 503 | 현재 서버의 의도된 응답. DB만 켠다고 200이 되지 않음 |
+| 서버 bind 실패 | 18080 포트 사용 여부 확인, `WSE_HTTP_LISTEN` 변경 |
+| 화면은 뜨지만 ticket 요청이 404 | Vite `/api` 프록시 및 Rust 서버 실행 여부 확인 |
+| WS 연결 실패 | `/ws` 프록시의 `ws: true`, target 포트, 브라우저 Network/WS 확인 |
+| DB 테스트가 너무 빨리 성공 | `--nocapture`로 skip 메시지와 `DATABASE_URL` 확인 |
+| PowerShell에서 npm 스크립트 실행 차단 | `npm.cmd ci`, `npm.cmd test`처럼 실행 파일을 직접 사용 |
+| `--locked` 오류 | 의존성 변경이 의도된 것인지 확인하고 해당 lock 파일을 함께 갱신 |
+
+## 11. 기여 방법
+
+버그 수정, 테스트 보강, 문서 수정, 엔진과 클라이언트 개발 모두 기여할 수 있습니다. 첫 작업으로는 실행 안내 재현, DB 테스트 skip 개선, 개발 프록시 설정, E2E 경로 이식성 개선처럼 범위가 명확한 항목이 좋습니다. 큰 구조 변경은 먼저 Issue에서 요구사항과 접근 방법을 논의하세요.
+
+1. 기존 Issue/PR과 [구현 백로그](docs/13-implementation-backlog.md)를 확인해 중복 작업을 피합니다.
+2. 현재 저장소의 기본 브랜치 또는 유지관리자가 지정한 브랜치에서 작업 브랜치를 만듭니다. 과거 문서만 보고 `nmain`이 존재한다고 가정하지 마세요.
+3. 변경을 한 가지 문제로 좁히고 해당 동작을 검증하는 테스트와 관련 문서를 함께 수정합니다.
+4. 위 검증 명령을 실행하고 Fork에서 PR을 제출합니다. 관련 `REQ-*`, `TASK-*`, `TEST-*`가 있으면 연결합니다.
+
+```sh
+git switch -c fix/describe-the-change
+# 수정과 검증 후 관련 파일만 선택해 커밋
+git add <CHANGED_FILES>
+git commit -m "Describe the change"
+git push -u origin fix/describe-the-change
+```
+
+PR 본문에는 다음 정보를 포함해 주세요.
+
+- **문제와 변경 결과:** 어떤 상황에서 무엇이 달라지는가
+- **관련 계약:** API/DB/Command/Event와 schema_version 영향, 필요한 ADR 변경
+- **검증:** 실행한 명령, 결과, OS·도구 버전, 실제 PostgreSQL 사용 여부
+- **제한:** 미실행 테스트, 알려진 문제, 호환성·복구 영향
+- **UI 변경:** 변경 전후 화면과 브라우저 확인 결과
+
+Rust는 rustfmt·clippy 기준을 따릅니다. Cargo.lock과 웹 package-lock.json은 의존성 변경 시 함께 관리하고 단순 코드 변경에 불필요한 lock 갱신을 섞지 마세요. 공유 프로토콜 변경은 Rust 계약과 TypeScript 클라이언트 양쪽을 확인하세요. 아키텍처 변경은 [ADR](docs/15-adrs.md)에 이유와 영향을 기록하고 3절의 단일 Writer·비차단 Tick·Commit/ACK 불변식을 지킵니다.
+
+버그 Issue에는 재현 단계, 기대/실제 결과, 커밋, OS·도구 버전, 민감정보를 제거한 로그를 첨부하세요. 결정성 문제에는 seed·Tick 수·입력 조건도 필요합니다. 비밀번호, ticket, 실제 계정 데이터, 개인 접속 문자열은 커밋이나 공개 Issue에 포함하지 마세요. 보안 취약점은 저장소의 비공개 신고 기능이 제공되는 경우 해당 경로를 사용하세요.
+
+## 12. 라이선스
+
+프로젝트 루트의 [LICENSE](LICENSE)는 **Apache License 2.0**입니다. 외부 라이브러리와 에셋에는 각자의 라이선스가 적용됩니다. 에셋을 추가할 때는 출처·라이선스·재배포 조건을 함께 기록해 주세요. [클라이언트 README](apps/web-client/README.md)의 에셋 설명은 프로젝트 전체 라이선스를 대체하지 않습니다.
 
 ---
 
 <!-- source: docs/00-vision-scope.md -->
 
 # 00. 비전 · 게임 범위 · 용어
+
+**한국어** | [English](docs/en/00-vision-scope.md)
 
 ## 1. 제품 비전
 
@@ -181,6 +408,8 @@ M0 CI 파일은 [.github/workflows/wse-m0.yml](.github/workflows/wse-m0.yml)이�
 
 # 01. 요구사항 명세 (SRS)
 
+**한국어** | [English](docs/en/01-requirements.md)
+
 ## 1. 기능 요구사항
 
 | ID | 등급 | 요구사항 | 인수 기준 |
@@ -242,6 +471,8 @@ M0 CI 파일은 [.github/workflows/wse-m0.yml](.github/workflows/wse-m0.yml)이�
 <!-- source: docs/02-hld-architecture.md -->
 
 # 02. 전체 아키텍처 (HLD)
+
+**한국어** | [English](docs/en/02-hld-architecture.md)
 
 ## 1. 컨텍스트 / 주요 외부 시스템
 
@@ -361,6 +592,8 @@ sequenceDiagram
 <!-- source: docs/03-core-tick.md -->
 
 # 03. 시뮬레이션 코어와 Fixed Tick (LLD)
+
+**한국어** | [English](docs/en/03-core-tick.md)
 
 ## 1. 실행 계약
 
@@ -500,6 +733,8 @@ while running {
 
 # 04. Region Worker · ECS · Ownership (LLD)
 
+**한국어** | [English](docs/en/04-region-ecs.md)
+
 ## 1. Region 소유권 모델
 
 - 각 Region은 정확히 **하나의 Active Owner**만 갖는다.
@@ -626,6 +861,8 @@ sequenceDiagram
 
 # 05. Command / Event Pipeline · 실행 규칙 (LLD)
 
+**한국어** | [English](docs/en/05-command-event.md)
+
 ## 1. 불변식 및 책임
 
 - Command = 의도, Event = 발생한 사실, Delta = 클라이언트 현재 상태 변화. 혼용 금지.
@@ -741,6 +978,8 @@ max_occurrences_per_region_day: 1
 <!-- source: docs/06-npc-ai.md -->
 
 # 06. NPC Decision Engine — Utility AI + GOAP (LLD)
+
+**한국어** | [English](docs/en/06-npc-ai.md)
 
 ## 1. 설계 목표
 
@@ -893,6 +1132,8 @@ Dialogue request (async) -> NPC facts + policy-approved memory
 
 # 07. World Systems — 이동·전투·경제·세력·환경·사건 (LLD)
 
+**한국어** | [English](docs/en/07-world-systems.md)
+
 ## 1. 공통 System 실행 원칙
 
 - 월드 상태 업데이트는 `simulation-core`에서 허용한 ECS Resource/Component에만 접근.
@@ -1018,6 +1259,8 @@ flowchart TD
 
 # 08. 영속 데이터 모델 · ERD (LLD)
 
+**한국어** | [English](docs/en/08-data-erd.md)
+
 ## 1. 데이터 소유권
 
 | 도메인 | SoT(진실 원천) | 캐시/Projection | 복구 |
@@ -1121,6 +1364,8 @@ RETURNING gold, version;
 <!-- source: docs/09-persistence-recovery.md -->
 
 # 09. Persistence · Transaction · Snapshot · Recovery (LLD)
+
+**한국어** | [English](docs/en/09-persistence-recovery.md)
 
 ## 1. 보장 수준 명시
 
@@ -1265,6 +1510,8 @@ SELECT ownership_epoch, owner_id, lease_expires_at
 
 # 10. 멀티플레이어 동기화 · Network/AOI (LLD)
 
+**한국어** | [English](docs/en/10-network-replication.md)
+
 ## 1. 전송 원칙
 
 - 서버 권한: 클라이언트는 의도 Command만 보냄, 권한 있는 Region만 위치/HP/아이템 확정.
@@ -1356,6 +1603,8 @@ sequenceDiagram
 <!-- source: docs/11-protocols.md -->
 
 # 11. 외부 API와 프로토콜 계약 (LLD)
+
+**한국어** | [English](docs/en/11-protocols.md)
 
 ## 1. 일반 Envelope
 
@@ -1497,6 +1746,8 @@ sequenceDiagram
 
 # 12. 테스트 전략 · 벤치마크 · 관측성
 
+**한국어** | [English](docs/en/12-test-observability.md)
+
 ## 1. 품질 게이트
 
 모든 TASK는 `unit → integration → deterministic → recovery → load` 중 해당 범위를 통과해야 한다. 실행하지 않은 테스트는 `NOT RUN`으로 명시하며, 예상 성능 수치를 실측치로 표현하지 않는다.
@@ -1610,6 +1861,8 @@ JSON log의 공통 key: `timestamp`, `level`, `service`, `world_id`, `region_id`
 <!-- source: docs/13-implementation-backlog.md -->
 
 # 13. 구현 백로그 · 작업 지시서 (실행 계획)
+
+**한국어** | [English](docs/en/13-implementation-backlog.md)
 
 > 각 작업은 담당자가 달라도 독립적으로 시작할 수 있도록 **목표, 선행, 구체 산출물, 수용 테스트**를 포함한다. 소요 기간은 추정하지 않았으며, 팀 역량·환경에 따라 계획한다.
 
@@ -1735,6 +1988,8 @@ Rollback 방법 / 데이터 Migration / metrics
 
 # 14. 운영 · 보안 · 배포 · 장애 대응
 
+**한국어** | [English](docs/en/14-operations-security.md)
+
 ## 1. 배포 방식
 
 **MVP:** Docker Compose 또는 단일 서버 프로세스 + PostgreSQL, 개별 game-server Tokio runtime과 Region Worker threads. K8s는 필요 시 도입; 초기에 DB/실시간 Tick/여러 서비스 간 분산 복잡도 증가를 피한다.
@@ -1821,6 +2076,8 @@ Rollback 방법 / 데이터 Migration / metrics
 
 # 15. 아키텍처 결정 기록(ADR) 및 미결 사항
 
+**한국어** | [English](docs/en/15-adrs.md)
+
 ## 1. 결정 기준선
 
 | ADR | 상태 | 결정 | 근거/대안 |
@@ -1884,6 +2141,8 @@ Rollback 방법 / 데이터 Migration / metrics
 
 # 16. 플레이어 경험 · 프롤로그 · 공유 세계 진입 설계
 
+**한국어** | [English](docs/en/16-prologue-gameplay.md)
+
 ## 1. 목적
 
 게임이 시뮬레이션 중심이어도 첫 15분에 플레이어가 할 일을 알 수 있어야 한다. 개인 프롤로그는 핵심 기능을 순서 있게 보여주지만, 후반의 공유 세계는 자율 사건 중심으로 운영한다.
@@ -1938,6 +2197,8 @@ Rollback 방법 / 데이터 Migration / metrics
 
 # 17. 신규 개발자 온보딩 · 작업 시작 가이드
 
+**한국어** | [English](docs/en/17-developer-onboarding.md)
+
 ## 1. 이 문서로 합류한 개발자의 첫 작업
 
 ### Step 1. 게임 의도·범위 확인
@@ -1961,7 +2222,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-**주의:** 현재 패키지는 설계 문서 세트이며 Cargo 구현 프로젝트가 아닙니다. `Cargo.toml` Workspace/실제 코드는 `TASK-001` 수행 후 생성해야 합니다. Rust 및 SQLx의 세부 버전은 첫 구현 PR에서 lock으로 고정하십시오.
+**설계 작성 당시 안내:** 최초 패키지는 Cargo 구현 전의 설계 문서 세트였으며 TASK-001에서 Workspace를 만들고 Rust/SQLx 버전을 고정하도록 계획했습니다. 현재 체크아웃에는 Workspace가 있으므로 실제 실행 방법과 제한은 [루트 README](README.md)를 따르세요.
 
 ### Step 3. 첫 작업 선정
 
@@ -2039,6 +2300,8 @@ cargo test --workspace
 <!-- source: docs/18-end-to-end-example.md -->
 
 # 18. 끝까지 따라가는 구현 예제 — 구매와 식량 부족
+
+**한국어** | [English](docs/en/18-end-to-end-example.md)
 
 이 문서는 서로 다른 개발자가 작성한 Gateway/Region/DB/Event/Client가 어떻게 한 흐름으로 연결되는지 검증하는 **통합 시나리오 계약**이다.
 
@@ -2129,6 +2392,8 @@ UPDATE wallets SET gold = gold - $4, version = version + 1
 <!-- source: docs/19-nmain-development-plan.md -->
 
 # nmain 신규 개발 상세 실행 계획
+
+**한국어** | [English](docs/en/19-nmain-development-plan.md)
 
 작성일: 2026-11-09 (Asia/Seoul)
 상태: 구현 착수용 계획. 최신 진행 상태는 20-development-status.md와 outbox 완료 보고서를 참조한다.
@@ -2404,12 +2669,12 @@ DB 통합·브라우저 E2E·부하 테스트는 별도 명령과 환경을 담�
 
 ## 8. 근거 문서
 
-- [README](../README.md): 첫 Vertical Slice, 품질 기준, 구현 불변식
-- [요구사항](01-requirements.md), [아키텍처](02-hld-architecture.md)
-- [저장·복구](09-persistence-recovery.md), [테스트·관측성](12-test-observability.md)
-- [원본 TASK-001~014](13-implementation-backlog.md), [운영](14-operations-security.md)
-- [ADR·OPEN 항목](15-adrs.md), [프롤로그](16-prologue-gameplay.md)
-- [통합 시나리오](18-end-to-end-example.md)
+- [README](README.md): 첫 Vertical Slice, 품질 기준, 구현 불변식
+- [요구사항](docs/01-requirements.md), [아키텍처](docs/02-hld-architecture.md)
+- [저장·복구](docs/09-persistence-recovery.md), [테스트·관측성](docs/12-test-observability.md)
+- [원본 TASK-001~014](docs/13-implementation-backlog.md), [운영](docs/14-operations-security.md)
+- [ADR·OPEN 항목](docs/15-adrs.md), [프롤로그](docs/16-prologue-gameplay.md)
+- [통합 시나리오](docs/18-end-to-end-example.md)
 
 ---
 
@@ -2417,14 +2682,16 @@ DB 통합·브라우저 E2E·부하 테스트는 별도 명령과 환경을 담�
 
 # 개발 상태와 요구사항 추적
 
-기준: nmain 신규 엔진. 기존 게임의 테스트 결과를 신규 엔진 완료 증거로 사용하지 않는다.
+**한국어** | [English](docs/en/20-development-status.md)
+
+기준: nmain 신규 엔진. 이 표는 원문 작성 시점의 기록이며 이후 변경은 루트 README와 실제 구현을 확인한다. 기존 게임의 테스트 결과를 신규 엔진 완료 증거로 사용하지 않는다.
 
 | TASK | REQ | 검증 | 상태 |
 |---|---|---|---|
 | 000 저장소 | N-008 | SQL/설정 Git 포함, 문서 링크·manifest check | DONE (M0 로컬 게이트) |
 | 001 환경 | F-001 기반, N-007 기반 | fmt/clippy/test/build, 실제 HTTP/CLI smoke, CI 정의 | DONE (M0 로컬 게이트) |
-| 002 ECS | F-002 | Stable ID 생성/삭제/복원 | NOT STARTED |
-| 003 Tick | F-001/003, N-001 | 10,000 Tick 상태·이벤트 hash | NOT STARTED |
+| 002 ECS | F-002 | Stable ID 생성/삭제/복원, 10,000 Entity 수명주기, 중복 거부 | DONE (로컬 게이트 통과) |
+| 003 Tick | F-001/003, N-001 | 10,000 Tick 상태·이벤트 hash | DONE (로컬 게이트 통과) |
 | 004 계약 | F-004/009, N-008 | 중복/순서/버전/규칙 순환 | NOT STARTED |
 | 005 이동/전투 | F-007/008/015 | 충돌/경로/사거리/사망 | NOT STARTED |
 | 006 Worker | F-005/017, N-005 | single writer, bounded queue, 종료 | NOT STARTED |
@@ -2444,7 +2711,7 @@ REQ 표의 F/N 접두사는 docs/01의 REQ-F/REQ-N을 뜻한다. 테스트 구�
 M0의 Runner --check는 CLI 검증이며 REQ-F-001의 헤드리스 시뮬레이션 완료가 아니다.
 M0에서는 Tick 지표나 저장 지표를 거짓 값으로 노출하지 않는다.
 
-완료 근거: [M0 보고서](../outbox/2026-11-09-m0-completion.md). GitHub 호스팅 CI는 커밋/push 전이므로 NOT RUN.
+과거 완료 근거: `outbox/2026-11-09-m0-completion.md` (현재 체크아웃에 포함되지 않음). GitHub 호스팅 CI는 커밋/push 전이므로 NOT RUN.
 
 ---
 
@@ -2452,7 +2719,9 @@ M0에서는 Tick 지표나 저장 지표를 거짓 값으로 노출하지 않는
 
 # M0 개발 환경 결정
 
-상태: M0 구현 결정. 기존 ADR-001~015를 변경하지 않는다.
+**한국어** | [English](docs/en/21-m0-bootstrap-decisions.md)
+
+상태: M0 구현 결정. 기존 ADR-001~015를 변경하지 않는다. 아래 실행 상태는 M0 당시 기록이며 현재 동작은 루트 README를 참고한다.
 
 ## ADR-016: 신규 실행 경계와 도구 고정
 
@@ -2479,17 +2748,13 @@ M0에서는 Tick 지표나 저장 지표를 거짓 값으로 노출하지 않는
 
 ## 문서 편집과 검증
 
-README.md, docs/NN-*.md, schemas가 편집 원본이다.
-RPG_WSE_Complete_Design.md와 manifest.json은 다음 명령으로 생성하며 직접 편집하지 않는다.
+README.md, README.en.md, docs/NN-*.md, docs/en/NN-*.md, schemas가 편집 원본이다. [문서 관리 안내](docs/README.md)의 명령으로 통합본과 manifest를 생성하며, 생성물을 직접 편집하지 않는다.
 
-```sh
-python3 scripts/sync-design-docs.py
-python3 scripts/sync-design-docs.py --check
-```
+과거 M0 명령은 `python3 scripts/sync-design-docs.py`와 `--check` 옵션이었다. 이 Python 스크립트는 현재 체크아웃에 없으므로 관리 안내의 Node.js 명령을 사용한다.
 
-manifest는 생성 시각 대신 원본 byte/hash를 기록하여 동일 원본에서 동일 결과를 만든다.
-SQL 파일은 신규 DB 검증 전의 설계 초안이다. Git에 포함된 것과 DB 실행 검증을 구분한다.
-CI는 nmain 대상 PR 및 nmain/codex 브랜치 push에서 실행한다. 워크플로 파일 작성과 원격 실행 PASS는 별도 상태다.
+manifest는 생성 시각 대신 원본 byte/hash를 기록하여 동일 원본에서 동일 결과를 만든다. SQL은 새 DB에서 검증하기 전까지 설계 초안이며, Git 포함과 실행 검증은 구분한다.
+
+과거 CI 정책은 nmain 대상 PR 및 nmain/codex 브랜치 push였다. 워크플로 정의와 원격 실행 PASS는 별도 상태다.
 
 ---
 

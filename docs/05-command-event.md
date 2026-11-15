@@ -1,5 +1,7 @@
 # 05. Command / Event Pipeline · 실행 규칙 (LLD)
 
+**한국어** | [English](en/05-command-event.md)
+
 ## 1. 불변식 및 책임
 
 - Command = 의도, Event = 발생한 사실, Delta = 클라이언트 현재 상태 변화. 혼용 금지.

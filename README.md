@@ -1,10 +1,12 @@
 # RPG World Simulation Engine (RPG-WSE)
 
+**한국어** | [English](README.en.md)
+
 > Rust 기반 실시간·지속형 RPG 시뮬레이션 엔진입니다. 현재 개발 중인 프로토타입으로, 설계 목표와 구현·통합 완료 여부를 구분합니다.
 > 기술: **Rust + Bevy ECS + Tokio + Axum + PostgreSQL + Vue 3/Phaser**
 > 대상: 새로운 실시간·지속형 중세 판타지 RPG 시뮬레이션. 기존 저장소와의 호환성은 가정하지 않는다.
 
-처음 참여한다면 아래 **빠른 시작 → 저장소 구조 → 변경 검증 → 기여 방법** 순서로 읽어 주세요.
+처음 참여한다면 아래 **빠른 시작 → 저장소 구조 → 변경 검증 → 기여 방법** 순서로 읽어 주세요. [한국어 문서 목록](docs/README.md)과 [English documentation](docs/en/README.md)에서 전체 문서를 찾을 수 있습니다.
 
 ## 0. 먼저 읽기
 
@@ -58,6 +60,8 @@
 
 `REQ-*` 요구사항, `ADR-*` 아키텍처 결정, `TASK-*` 구현 작업, `TEST-*` 테스트를 ID로 참조한다. **[확정]**은 기준선, **[가정]**은 초기값, **[추후]**는 별도 결정 필요. 코드 블록은 계약/예시이며 전체 서버 구현이나 빌드 통과를 보장하지 않는다. 모든 메시지는 `schema_version`을 보유한다. 문서 간 모순이 생기면 `15-adrs.md`의 결정과 `09-persistence-recovery.md`의 원자성 규칙을 우선하고 변경 이력을 기록한다.
 
+한국어 원본은 `README.md`와 `docs/NN-*.md`, 영어 버전은 `README.en.md`와 `docs/en/NN-*.md`입니다. 두 언어의 ID·명령·설정값·인수 기준을 함께 유지합니다. [문서 관리 안내](docs/README.md)를 참고하세요.
+
 ## 5. 현재 구현 범위와 제한
 
 아래는 현재 소스의 진입점과 모듈 구성을 기준으로 한 안내입니다. 코드가 존재한다는 사실이 통합 검증이나 운영 준비 완료를 의미하지는 않습니다.
@@ -73,7 +77,7 @@
 
 기본 gateway는 `GatewayState::default()`로 생성되며 시뮬레이션 명령 채널이 연결되지 않습니다. 서버와 UI를 각각 실행했다고 해서 이동·전투·영속 저장을 갖춘 전체 게임이 동작하는 것은 아닙니다. 프롤로그 파일 저장 기본 경로는 `.data/prologue`입니다.
 
-[개발 계획](docs/19-nmain-development-plan.md), [작업 추적표](docs/20-development-status.md), [M0 ADR](docs/21-m0-bootstrap-decisions.md)은 배경 자료입니다. 일부 문서에는 과거 M0 설명과 `nmain` 브랜치 정책이 남아 있으므로 실제 코드·현재 PR 대상 브랜치와 함께 확인하세요. 현재 체크아웃에는 과거 안내의 `scripts/verify-m0.sh`, `scripts/sync-design-docs.py`, `.github/workflows/wse-m0.yml`이 없습니다. 아래 개별 명령으로 검증하세요.
+[개발 계획](docs/19-nmain-development-plan.md), [작업 추적표](docs/20-development-status.md), [M0 ADR](docs/21-m0-bootstrap-decisions.md)은 배경 자료입니다. 일부 문서에는 과거 M0 설명과 `nmain` 브랜치 정책이 남아 있으므로 실제 코드·현재 PR 대상 브랜치와 함께 확인하세요. 현재 체크아웃에는 과거 안내의 `scripts/verify-m0.sh`, `scripts/sync-design-docs.py`, `.github/workflows/wse-m0.yml`이 없습니다. 아래 개별 명령으로 검증하세요. 현재 문서 생성에는 `scripts/sync-design-docs.mjs`를 사용합니다.
 
 ## 6. 빠른 시작
 

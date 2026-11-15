@@ -1,5 +1,7 @@
 # 10. 멀티플레이어 동기화 · Network/AOI (LLD)
 
+**한국어** | [English](en/10-network-replication.md)
+
 ## 1. 전송 원칙
 
 - 서버 권한: 클라이언트는 의도 Command만 보냄, 권한 있는 Region만 위치/HP/아이템 확정.

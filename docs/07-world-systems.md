@@ -1,5 +1,7 @@
 # 07. World Systems — 이동·전투·경제·세력·환경·사건 (LLD)
 
+**한국어** | [English](en/07-world-systems.md)
+
 ## 1. 공통 System 실행 원칙
 
 - 월드 상태 업데이트는 `simulation-core`에서 허용한 ECS Resource/Component에만 접근.

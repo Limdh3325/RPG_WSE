@@ -1,6 +1,8 @@
 # 개발 상태와 요구사항 추적
 
-기준: nmain 신규 엔진. 기존 게임의 테스트 결과를 신규 엔진 완료 증거로 사용하지 않는다.
+**한국어** | [English](en/20-development-status.md)
+
+기준: nmain 신규 엔진. 이 표는 원문 작성 시점의 기록이며 이후 변경은 루트 README와 실제 구현을 확인한다. 기존 게임의 테스트 결과를 신규 엔진 완료 증거로 사용하지 않는다.
 
 | TASK | REQ | 검증 | 상태 |
 |---|---|---|---|
@@ -27,4 +29,4 @@ REQ 표의 F/N 접두사는 docs/01의 REQ-F/REQ-N을 뜻한다. 테스트 구�
 M0의 Runner --check는 CLI 검증이며 REQ-F-001의 헤드리스 시뮬레이션 완료가 아니다.
 M0에서는 Tick 지표나 저장 지표를 거짓 값으로 노출하지 않는다.
 
-완료 근거: [M0 보고서](../outbox/2026-11-09-m0-completion.md). GitHub 호스팅 CI는 커밋/push 전이므로 NOT RUN.
+과거 완료 근거: `outbox/2026-11-09-m0-completion.md` (현재 체크아웃에 포함되지 않음). GitHub 호스팅 CI는 커밋/push 전이므로 NOT RUN.

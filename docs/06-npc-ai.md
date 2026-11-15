@@ -1,5 +1,7 @@
 # 06. NPC Decision Engine — Utility AI + GOAP (LLD)
 
+**한국어** | [English](en/06-npc-ai.md)
+
 ## 1. 설계 목표
 
 NPC는 플레이어가 없어도 목적·욕구에 따라 행동한다. 단, 모든 NPC를 매 Tick 재계획하지 않고 **Perception → Urgent Reaction → Utility Goal Selection → GOAP Planning → Action Execution** 단계를 분리한다. NPC AI는 영속 상태를 직접 변경하지 않으며 `NPC_ACTION` Command를 다음 Tick에 제출한다.
