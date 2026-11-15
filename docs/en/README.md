@@ -28,8 +28,11 @@ Read the [project README](../../README.en.md) first for setup and current limita
 | [19-nmain-development-plan.md](19-nmain-development-plan.md) | Detailed Development Plan for the New nmain Engine |
 | [20-development-status.md](20-development-status.md) | Development Status and Requirements Traceability |
 | [21-m0-bootstrap-decisions.md](21-m0-bootstrap-decisions.md) | M0 Development Environment Decisions |
+| [22-agent-work-measurement.md](22-agent-work-measurement.md) | Agent Work Measurement |
 
 ## Maintaining both languages
+
+Track current work in the [work index](../work-index.md). The index and inbox/outbox request/result records are shared Korean operational records. Both language versions of the measurement rules link to the same records; per-task translations are not required.
 
 - Korean: root README.md and docs/NN-*.md. English: root README.en.md and docs/en/NN-*.md.
 - Preserve filenames, REQ/ADR/TASK/TEST IDs, numeric limits, commands, protocol fields, and acceptance criteria. Translate prose and comments, not executable identifiers.
