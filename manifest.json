@@ -1,0 +1,112 @@
+{
+  "title": "RPG World Simulation Engine HLD/LLD",
+  "baseline_date": "2026-11-09",
+  "docs": 22,
+  "generator": "scripts/sync-design-docs.py",
+  "files": {
+    "README.md": {
+      "sha256": "f0420ed1b4e14698c9393c75890d55a691dd6cb8d875d56d8ea5b86358f00f98",
+      "bytes": 20591
+    },
+    "docs/00-vision-scope.md": {
+      "sha256": "8aed6e9e3bf7639e56af700570512fe409b1fa96686f70a088e2c8225f65f6eb",
+      "bytes": 4010
+    },
+    "docs/01-requirements.md": {
+      "sha256": "dc8b92ad48ffdc88cb315a860fbcbc3e71deab25f0143036f48387a5f94943b8",
+      "bytes": 3982
+    },
+    "docs/02-hld-architecture.md": {
+      "sha256": "5bf4a19189f5c1546c7b45ff30eba50dca856c9f57c06c4e6709715be60de8fe",
+      "bytes": 5586
+    },
+    "docs/03-core-tick.md": {
+      "sha256": "a7f8b681e20b9834296daf7b731009432423592326ae80098481776bc783e354",
+      "bytes": 6605
+    },
+    "docs/04-region-ecs.md": {
+      "sha256": "ccbf4680ca9eaf72fa0661192c850186632602ebc30f1c65926af6845e119bba",
+      "bytes": 5762
+    },
+    "docs/05-command-event.md": {
+      "sha256": "180710b6a4d7154edd1166645629200ee98447edc1266a9eda0ce3830c031492",
+      "bytes": 5219
+    },
+    "docs/06-npc-ai.md": {
+      "sha256": "2c7e7ad529e5d7c29becdc8fa64837710fd4fd8806edd39b4273b4a0adcc3a2b",
+      "bytes": 7456
+    },
+    "docs/07-world-systems.md": {
+      "sha256": "6205be7f66678ec2824ec080620bd7f25fb76bd9a01b9796e8676545423410dc",
+      "bytes": 6260
+    },
+    "docs/08-data-erd.md": {
+      "sha256": "76b010d41e957f6ba3db1aac6803ed48aee1fc1995f5f723843ee63b3a76bd2b",
+      "bytes": 4995
+    },
+    "docs/09-persistence-recovery.md": {
+      "sha256": "81a6bbeea3714dd644d6dda2eef0c64995558971b559e7096f921492f13082bc",
+      "bytes": 6840
+    },
+    "docs/10-network-replication.md": {
+      "sha256": "4a50c3ca12e08994c6a1a5496f454537195790897681fd60bb307bdf1f36dc91",
+      "bytes": 4573
+    },
+    "docs/11-protocols.md": {
+      "sha256": "83dcf117c24a135aada6b8032ff53ad0a46db7f6a66fcf310d722b3f45744275",
+      "bytes": 5352
+    },
+    "docs/12-test-observability.md": {
+      "sha256": "caec0b4fd68b548e1f52c88841055adedb3da1964c7cfa5a5413ff1b05d14969",
+      "bytes": 5321
+    },
+    "docs/13-implementation-backlog.md": {
+      "sha256": "0eddacd3bf75c22933e37fec4617e28f6b5eadfd688eed2478ae3018359ecd3f",
+      "bytes": 6103
+    },
+    "docs/14-operations-security.md": {
+      "sha256": "e09145433c54c7f2f18a0a6b6c3afc8d52d5da23a185d3cd682aa7529a47c67e",
+      "bytes": 4610
+    },
+    "docs/15-adrs.md": {
+      "sha256": "34d071a4a090ab0116bb02152cb6ef6a13f8d9ac9f049e741d6205ccc6acffda",
+      "bytes": 4064
+    },
+    "docs/16-prologue-gameplay.md": {
+      "sha256": "64f529600e047e8fc090d473b0f11c17ded66464227d7eff4e8f730999344065",
+      "bytes": 3533
+    },
+    "docs/17-developer-onboarding.md": {
+      "sha256": "3702f2dabaae173b84fa130425b533349b78a086d75479d6e8f345aedad8f132",
+      "bytes": 4733
+    },
+    "docs/18-end-to-end-example.md": {
+      "sha256": "aeba926800c872f2514d3cbb9ca49f61267f5108066da2b370274deba6504c2b",
+      "bytes": 4812
+    },
+    "docs/19-nmain-development-plan.md": {
+      "sha256": "272038c15dff0f37c6ab9ad11d7837e9f59d5252862400acd477647cd969d7be",
+      "bytes": 20682
+    },
+    "docs/20-development-status.md": {
+      "sha256": "0fdb20d914641a6efe16bda165f033c9e82ed8db7e7e235e7c292a3fd6456750",
+      "bytes": 2179
+    },
+    "docs/21-m0-bootstrap-decisions.md": {
+      "sha256": "1da7545ae327e1f3e71eb55c16337d1eb1ad4d6fdfa1fc12f6320ddad0edd41a",
+      "bytes": 2658
+    },
+    "schemas/0001_initial.sql": {
+      "sha256": "7266ca7c18b9437e619a38c205e3013d4abab12c45be1ee2d6036ac1870eab43",
+      "bytes": 11265
+    },
+    "schemas/config.example.toml": {
+      "sha256": "114435a413d8a7c6fadcf85478e6ec5c239b4f4b883539f8bb40ce4b1ab33fbd",
+      "bytes": 925
+    },
+    "RPG_WSE_Complete_Design.md": {
+      "sha256": "d08b864a793867512483d53d92ff78769acc9d1e49501c3533357d275c930895",
+      "bytes": 149121
+    }
+  }
+}

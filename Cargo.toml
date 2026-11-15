@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["apps/game-server", "apps/simulation-runner", "crates/game-domain", "crates/ecs-components", "crates/simulation-core", "crates/simulation-systems", "crates/persistence", "crates/networking", "crates/shared-protocol"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[workspace.dependencies]
+axum = "=0.8.6"
+bevy_ecs = { version = "=0.17.2", default-features = false, features = ["std"] }
+clap = { version = "=4.5.51", features = ["derive"] }
+rand_chacha = "=0.3.1"
+rand_core = "=0.6.4"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+sha2 = "=0.10.9"
+sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate"] }
+thiserror = "=2.0.17"
+tokio = { version = "=1.48.0", features = ["macros", "rt-multi-thread", "net", "signal"] }
+toml = "=0.9.8"
+tracing = "=0.1.41"
+tracing-subscriber = { version = "=0.3.20", features = ["env-filter", "json"] }
+uuid = { version = "=1.18.1", features = ["serde", "v4"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"

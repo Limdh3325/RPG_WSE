@@ -1,0 +1,37 @@
+# WSE sample configuration. Place secrets in environment/secret manager.
+[server]
+http_listen = "127.0.0.1:18080"
+ws_auth_timeout_seconds = 5
+protocol_version = 1
+
+[simulation]
+tick_rate_hz = 10
+game_time_scale = 10
+npc_decision_interval_ticks = 10
+npc_long_planning_interval_ticks = 100
+max_npc_evaluations_per_tick = 200
+max_goap_expansions_per_plan = 128
+max_events_per_tick = 1000
+max_causation_depth = 8
+
+[region]
+command_queue_capacity = 4096
+persistence_ack_queue_capacity = 1024
+durable_queue_capacity = 512
+transient_delta_queue_capacity = 2048
+lease_seconds = 15
+lease_renew_seconds = 5
+snapshot_interval_seconds = 300
+active_to_background_grace_seconds = 60
+
+[network]
+aoi_cell_tile_size = 16
+aoi_radius_cells = 1
+state_delta_hz = 10
+max_message_bytes = 65536
+
+[persistence]
+# DATABASE_URL must be injected as env var, not checked in
+pool_max_connections = 20
+transaction_timeout_ms = 5000
+outbox_batch_size = 100

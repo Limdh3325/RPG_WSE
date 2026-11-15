@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv
+
+# Go & Local Vendor / Cache / Binaries
+.go/
+.go-cache/
+bin/
+main
+*.exe
+*.exe?
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Node / Frontend
+node_modules/
+dist/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+*.sql
+!docs/06-data/postgres-schema.sql
+
+# Environment & IDE
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+*.swp
+*.swo
+*.DS_Store
+
+# Backups & dumps
+outbox/*backup*
+outbox/*.log
+outbox/2026-11-01-floor5-raid-boss-and-repair-shop-report.md
+*.dump
+*.tar
+
+# WSE Rust and local verification
+/target/
+/.local-tools/
+.data/
+**/.data/
+!.env.example
+!schemas/*.sql
+
+# Runtime process files
+*.pid
