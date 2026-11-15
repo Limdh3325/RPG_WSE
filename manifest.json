@@ -1,7 +1,7 @@
 {
   "title": "RPG World Simulation Engine HLD/LLD",
   "baseline_date": "2026-11-09",
-  "docs": 22,
+  "docs": 23,
   "languages": {
     "ko": {
       "readme": "README.md",
@@ -23,12 +23,12 @@
       "bytes": 21040
     },
     "RPG_WSE_Complete_Design.en.md": {
-      "sha256": "a4421ef2ab6546768e0bc0d7b1b244e239fd08775bb78f5dba1bd1b818b8d6d2",
-      "bytes": 153010
+      "sha256": "b6567c067de14708269e26af2d79142700be406e573174e8794c9da543220e0f",
+      "bytes": 157566
     },
     "RPG_WSE_Complete_Design.md": {
-      "sha256": "5e4e19886ad4cd58dc9b682ecd570f5dc747b6666f280552e3339725216be975",
-      "bytes": 161569
+      "sha256": "5e4258ddefea366e88704d173385d0261d42c50cfbd9183d8d2ce14e02fba4e8",
+      "bytes": 166443
     },
     "docs/00-vision-scope.md": {
       "sha256": "e896f769f16f96bd3c6651cec1f6d7409ffb9a99f1cc4a5c8ef5424f03c2aa52",
@@ -118,9 +118,13 @@
       "sha256": "51bdc7b7f829b8ad4ff9aee5f81947660e81d18beb21ede3fe3fd65fed49d779",
       "bytes": 2963
     },
+    "docs/22-agent-work-measurement.md": {
+      "sha256": "09c2f88f2aab1fb21c9260f4fc949f2ce2e69e52b216f1f6f49a06d7a5035768",
+      "bytes": 4807
+    },
     "docs/README.md": {
-      "sha256": "d1bd158455c4f7669027b853ffbd9e8a0a455ff2733f494b63b1d1b805d1872c",
-      "bytes": 3717
+      "sha256": "207cb6d10fcade99b27d26523ebfae925a817f763b268310947ede7816e5e09f",
+      "bytes": 4086
     },
     "docs/en/00-vision-scope.md": {
       "sha256": "005eb2365a06021d29eae74e9c36b08e73f0f4cbeece2b7a745cf74f8652fab0",
@@ -210,9 +214,13 @@
       "sha256": "849b65f1f2624d804d6c10bf898d4588979697db79be82f465f7c001e8bccdef",
       "bytes": 2728
     },
+    "docs/en/22-agent-work-measurement.md": {
+      "sha256": "1a639bc5288f0b8a2785ef0d632092e3b91637fb3fee60ff7c3f12b5caa3e63c",
+      "bytes": 4495
+    },
     "docs/en/README.md": {
-      "sha256": "ca940148cfc3b087f5e49cf1b45e50536821169edffb2e3ecfeb3fe41bbef07b",
-      "bytes": 3629
+      "sha256": "14251487e657792fe72246fd36f61b797ef009f37fe9ac2532e4043c2c22e66c",
+      "bytes": 3981
     },
     "schemas/0001_initial.sql": {
       "sha256": "7266ca7c18b9437e619a38c205e3013d4abab12c45be1ee2d6036ac1870eab43",

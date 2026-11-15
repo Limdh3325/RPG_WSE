@@ -2,7 +2,7 @@
 
 **한국어** | [English](en/README.md)
 
-설치와 현재 구현 제한은 [프로젝트 README](../README.md)를 먼저 읽어 주세요. 00–21 문서는 설계 계약과 과거 단계별 기록을 포함하며, 계획된 기능이 구현 완료를 뜻하지는 않습니다.
+설치와 현재 구현 제한은 [프로젝트 README](../README.md)를 먼저 읽어 주세요. 00–22 문서는 설계 계약과 과거 단계별 기록 및 작업 측정 규칙을 포함하며, 계획된 기능이 구현 완료를 뜻하지는 않습니다. 현재 작업은 [작업 색인](work-index.md)에서 추적합니다.
 
 | 문서 | 주제 |
 |---|---|
@@ -28,8 +28,11 @@
 | [19-nmain-development-plan.md](19-nmain-development-plan.md) | nmain 신규 개발 상세 실행 계획 |
 | [20-development-status.md](20-development-status.md) | 개발 상태와 요구사항 추적 |
 | [21-m0-bootstrap-decisions.md](21-m0-bootstrap-decisions.md) | M0 개발 환경 결정 |
+| [22-agent-work-measurement.md](22-agent-work-measurement.md) | 에이전트 작업 측정 |
 
 ## 두 언어 문서 관리
+
+작업 색인과 inbox/outbox 요청·결과는 한국어 공통 운영 기록입니다. 건별 번역 대신 두 언어의 측정 규칙에서 같은 기록을 연결합니다.
 
 - 한국어: 루트 README.md와 docs/NN-*.md. 영어: 루트 README.en.md와 docs/en/NN-*.md.
 - 파일명, REQ/ADR/TASK/TEST ID, 수치 제한, 명령, 프로토콜 필드, 인수 기준을 유지합니다. 설명과 주석을 번역하고 실행 식별자는 바꾸지 않습니다.
