@@ -12,8 +12,8 @@ use game_domain::{
 use simulation_core::{
     SimulationEngine,
     command::{
-        CommandEnvelope, CommandPayload, CommandStatus, DeduplicationOutcome,
-        SUPPORTED_COMMAND_SCHEMA_VERSION,
+        CommandEnvelope, CommandPayload, CommandStatus, DeduplicationOutcome, IngressCommand,
+        SUPPORTED_COMMAND_SCHEMA_VERSION, TransientCommandDeduplicator,
     },
     event::{
         EventBudget, EventEnvelope, EventRule, RuleAction, SUPPORTED_EVENT_SCHEMA_VERSION,
@@ -1045,4 +1045,123 @@ fn test_cmd_ingress_stress_and_ordering_invariants() {
             Some(CommandStatus::Succeeded)
         );
     }
+}
+
+/// Verification test: True LRU eviction behavior under capacity bound.
+#[test]
+fn test_cmd_deduplicator_true_lru_eviction() {
+    let mut dedup = TransientCommandDeduplicator::new(3);
+    let player = EntityId::from_u128(1);
+    let region = RegionId::from_u128(1);
+
+    let make_env = |id: u128, dx: i32| {
+        CommandEnvelope::new(
+            CommandId::from_u128(id),
+            player,
+            region,
+            SessionId::from_u128(100),
+            id as u64,
+            1,
+            id as u64,
+            1,
+            CommandPayload::SetVelocity { dx, dy: 0 },
+        )
+    };
+
+    let env1 = make_env(1, 10);
+    let env2 = make_env(2, 20);
+    let env3 = make_env(3, 30);
+    let env4 = make_env(4, 40);
+
+    // Insert 1, 2, 3 -> buffer holds [1, 2, 3]
+    assert_eq!(
+        dedup.check_and_register(&env1).unwrap(),
+        DeduplicationOutcome::New
+    );
+    assert_eq!(
+        dedup.check_and_register(&env2).unwrap(),
+        DeduplicationOutcome::New
+    );
+    assert_eq!(
+        dedup.check_and_register(&env3).unwrap(),
+        DeduplicationOutcome::New
+    );
+    assert_eq!(dedup.len(), 3);
+
+    // Refresh recency of 1 by duplicate check -> LRU order is now: 2 (oldest), 3, 1 (newest)
+    match dedup.check_and_register(&env1).unwrap() {
+        DeduplicationOutcome::Duplicate { original_tick, .. } => {
+            assert_eq!(original_tick, 1);
+        }
+        _ => panic!("Expected duplicate for env1"),
+    }
+
+    // Insert 4 at capacity 3 -> 2 must be evicted, NOT 1 (even though 1 has smaller CommandId)
+    assert_eq!(
+        dedup.check_and_register(&env4).unwrap(),
+        DeduplicationOutcome::New
+    );
+    assert_eq!(dedup.len(), 3);
+
+    assert!(
+        dedup.get_status(CommandId::from_u128(1)).is_some(),
+        "Command 1 was refreshed and must not be evicted"
+    );
+    assert!(
+        dedup.get_status(CommandId::from_u128(2)).is_none(),
+        "Command 2 was least recently used and must be evicted"
+    );
+    assert!(
+        dedup.get_status(CommandId::from_u128(3)).is_some(),
+        "Command 3 must remain in cache"
+    );
+    assert!(
+        dedup.get_status(CommandId::from_u128(4)).is_some(),
+        "Command 4 must remain in cache"
+    );
+}
+
+/// Verification test: SimulationEngine::submit_command enforces contracts and deduplication.
+#[test]
+fn test_engine_submit_command_enforces_contracts_and_deduplication() {
+    let (mut engine, player) = setup_test_engine(42);
+
+    let cmd1 = IngressCommand::new(
+        1001,
+        player,
+        1,
+        1,
+        CommandPayload::SetVelocity { dx: 10, dy: 10 },
+    );
+
+    // First submission -> Accepted as New
+    let res1 = engine.submit_command(cmd1.clone());
+    assert_eq!(res1.unwrap(), DeduplicationOutcome::New);
+
+    // Duplicate submission -> Detected as Duplicate
+    let res2 = engine.submit_command(cmd1);
+    match res2.unwrap() {
+        DeduplicationOutcome::Duplicate {
+            original_tick,
+            status,
+        } => {
+            assert_eq!(original_tick, 1);
+            assert_eq!(status, CommandStatus::Accepted);
+        }
+        _ => panic!("Expected duplicate detection"),
+    }
+
+    // Mismatched payload for same command_id -> IdempotencyConflict error
+    let conflict_cmd = IngressCommand::new(
+        1001,
+        player,
+        1,
+        2,
+        CommandPayload::SetVelocity { dx: 99, dy: 99 },
+    );
+    let res_conflict = engine.submit_command(conflict_cmd);
+    assert!(
+        matches!(res_conflict, Err(DomainError::IdempotencyConflict { .. })),
+        "Direct submit_command must reject conflicting payload for existing command_id"
+    );
 }

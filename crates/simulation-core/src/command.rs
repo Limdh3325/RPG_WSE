@@ -151,6 +151,22 @@ impl CommandEnvelope {
             payload: self.payload.clone(),
         }
     }
+
+    /// Converts an ingress command into a canonical CommandEnvelope for the given region.
+    #[must_use]
+    pub fn from_ingress(cmd: &IngressCommand, region_id: RegionId) -> Self {
+        Self::new(
+            cmd.command_id,
+            cmd.entity_id,
+            region_id,
+            SessionId::from_u128(0),
+            cmd.ingress_seq,
+            cmd.assigned_tick,
+            cmd.ingress_seq,
+            1,
+            cmd.payload.clone(),
+        )
+    }
 }
 
 /// An ingress command assigned to be executed at a specific tick.
@@ -215,10 +231,12 @@ pub enum DeduplicationOutcome {
     },
 }
 
-/// In-memory transient command deduplication buffer.
+/// In-memory transient command deduplication buffer with deterministic LRU eviction.
 #[derive(Debug, Clone)]
 pub struct TransientCommandDeduplicator {
-    cache: BTreeMap<CommandId, ([u8; 32], u64, CommandStatus)>,
+    cache: BTreeMap<CommandId, ([u8; 32], u64, CommandStatus, u64)>,
+    lru_order: BTreeMap<u64, CommandId>,
+    access_counter: u64,
     capacity: usize,
 }
 
@@ -227,6 +245,8 @@ impl TransientCommandDeduplicator {
     pub fn new(capacity: usize) -> Self {
         Self {
             cache: BTreeMap::new(),
+            lru_order: BTreeMap::new(),
+            access_counter: 0,
             capacity: capacity.max(1),
         }
     }
@@ -241,32 +261,53 @@ impl TransientCommandDeduplicator {
         // Enforce schema version and payload hash integrity
         envelope.validate()?;
 
-        if let Some(&(existing_hash, original_tick, status)) = self.cache.get(&envelope.command_id)
+        if let Some((existing_hash, original_tick, status, last_seq)) =
+            self.cache.get_mut(&envelope.command_id)
         {
-            if existing_hash != envelope.payload_hash {
+            if *existing_hash != envelope.payload_hash {
                 return Err(DomainError::IdempotencyConflict {
                     command_id: envelope.command_id.0,
-                    existing_hash,
+                    existing_hash: *existing_hash,
                     incoming_hash: envelope.payload_hash,
                 });
             }
+            let original_tick = *original_tick;
+            let status = *status;
+
+            // Refresh recency on duplicate access
+            let old_seq = *last_seq;
+            self.lru_order.remove(&old_seq);
+            self.access_counter += 1;
+            let new_seq = self.access_counter;
+            *last_seq = new_seq;
+            self.lru_order.insert(new_seq, envelope.command_id);
+
             return Ok(DeduplicationOutcome::Duplicate {
                 original_tick,
                 status,
             });
         }
 
-        if self.cache.len() >= self.capacity && !self.cache.is_empty() {
-            let first_key = *self.cache.keys().next().expect("cache not empty");
-            self.cache.remove(&first_key);
+        // Evict least-recently-used entry if at capacity
+        while self.cache.len() >= self.capacity {
+            if let Some((&oldest_seq, &oldest_id)) = self.lru_order.iter().next() {
+                self.lru_order.remove(&oldest_seq);
+                self.cache.remove(&oldest_id);
+            } else {
+                break;
+            }
         }
 
+        self.access_counter += 1;
+        let new_seq = self.access_counter;
+        self.lru_order.insert(new_seq, envelope.command_id);
         self.cache.insert(
             envelope.command_id,
             (
                 envelope.payload_hash,
                 envelope.assigned_tick,
                 CommandStatus::Accepted,
+                new_seq,
             ),
         );
 
@@ -279,8 +320,15 @@ impl TransientCommandDeduplicator {
         command_id: CommandId,
         new_status: CommandStatus,
     ) -> Result<(), DomainError> {
-        if let Some((_, _, status)) = self.cache.get_mut(&command_id) {
-            status.transition_to(new_status)
+        if let Some((_, _, status, last_seq)) = self.cache.get_mut(&command_id) {
+            status.transition_to(new_status)?;
+            let old_seq = *last_seq;
+            self.lru_order.remove(&old_seq);
+            self.access_counter += 1;
+            let new_seq = self.access_counter;
+            *last_seq = new_seq;
+            self.lru_order.insert(new_seq, command_id);
+            Ok(())
         } else {
             Err(DomainError::InvalidCommand {
                 reason: format!("command {command_id} not found in deduplicator cache"),
@@ -291,7 +339,7 @@ impl TransientCommandDeduplicator {
     /// Queries status of command if present.
     #[must_use]
     pub fn get_status(&self, command_id: CommandId) -> Option<CommandStatus> {
-        self.cache.get(&command_id).map(|(_, _, status)| *status)
+        self.cache.get(&command_id).map(|(_, _, status, _)| *status)
     }
 
     /// Number of commands currently tracked in cache.
