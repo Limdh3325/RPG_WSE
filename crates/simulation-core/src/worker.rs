@@ -89,6 +89,7 @@ pub struct RegionHandle {
     pub status: Arc<RwLock<RegionStatus>>,
     pub health: Arc<RwLock<RegionHealth>>,
     pub is_shutdown: Arc<AtomicBool>,
+    drained_intents: Arc<RwLock<Vec<DurableLootIntent>>>,
 }
 
 impl RegionHandle {
@@ -105,6 +106,11 @@ impl RegionHandle {
     /// Checks if the worker has stopped.
     pub fn is_stopped(&self) -> bool {
         self.status() == RegionStatus::Stopped || self.is_shutdown.load(Ordering::Relaxed)
+    }
+
+    /// Returns all unacknowledged durable loot intents extracted during shutdown.
+    pub fn drained_intents(&self) -> Vec<DurableLootIntent> {
+        self.drained_intents.read().unwrap().clone()
     }
 }
 
@@ -124,6 +130,7 @@ pub struct RegionWorker {
     lag_threshold: Duration,
     test_tick_delay: Duration,
     drain_tx: Option<oneshot::Sender<Vec<DurableLootIntent>>>,
+    drained_intents: Arc<RwLock<Vec<DurableLootIntent>>>,
 }
 
 impl RegionWorker {
@@ -150,6 +157,8 @@ impl RegionWorker {
         world.grid = map_grid;
         let engine = SimulationEngine::new(world, seed);
 
+        let drained_intents = Arc::new(RwLock::new(Vec::new()));
+
         let handle = RegionHandle {
             region_id,
             epoch,
@@ -159,6 +168,7 @@ impl RegionWorker {
             status: Arc::clone(&status),
             health: Arc::clone(&health),
             is_shutdown: Arc::clone(&is_shutdown),
+            drained_intents: Arc::clone(&drained_intents),
         };
 
         let worker = Self {
@@ -176,6 +186,7 @@ impl RegionWorker {
             lag_threshold: Duration::from_millis(LAG_THRESHOLD_MS),
             test_tick_delay: Duration::ZERO,
             drain_tx: None,
+            drained_intents,
         };
 
         (worker, handle)
@@ -373,6 +384,15 @@ impl RegionWorker {
     /// Drains up to channel capacity of ingress commands and submits to engine.
     fn drain_ingress_commands(&mut self) {
         while let Ok(cmd) = self.command_rx.try_recv() {
+            if cmd.ownership_epoch != self.epoch {
+                tracing::warn!(
+                    region_id = %self.region_id.0,
+                    cmd_epoch = cmd.ownership_epoch,
+                    worker_epoch = self.epoch,
+                    "discarding command with stale ownership epoch"
+                );
+                continue;
+            }
             let _ = self.engine.submit_envelope(cmd);
         }
     }
@@ -388,8 +408,14 @@ impl RegionWorker {
         // Drain remaining commands (discarding or rejecting gracefully)
         while self.command_rx.try_recv().is_ok() {}
 
-        // Drain pending intents if requested via ShutdownDrain
+        // Drain pending intents without loss into shared outbox and optional drain_tx
         let pending = self.engine.drain_pending_loot_intents();
+        if !pending.is_empty() {
+            self.drained_intents
+                .write()
+                .unwrap()
+                .extend(pending.clone());
+        }
         if let Some(tx) = self.drain_tx.take() {
             let _ = tx.send(pending);
         }

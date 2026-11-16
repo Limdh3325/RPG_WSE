@@ -57,6 +57,7 @@ pub struct RegionCoordinator {
     regions: Arc<RwLock<HashMap<RegionId, RegionHandle>>>,
     threads: Arc<RwLock<HashMap<RegionId, JoinHandle<()>>>>,
     epoch_validator: Option<EpochValidator>,
+    drained_intents: Arc<RwLock<HashMap<RegionId, Vec<DurableLootIntent>>>>,
 }
 
 impl RegionCoordinator {
@@ -140,11 +141,19 @@ impl RegionCoordinator {
             return Err(RouteError::RegionStopped(region_id));
         }
 
-        // 2. Validate Epoch hook
+        // 2. Validate Command Epoch matches Region Worker Epoch
+        if envelope.ownership_epoch != handle.epoch {
+            return Err(RouteError::EpochMismatch {
+                region_id,
+                expected: handle.epoch,
+            });
+        }
+
+        // 3. Validate External Epoch Validator hook with command's ownership epoch
         if self
             .epoch_validator
             .as_ref()
-            .is_some_and(|validator| !validator(region_id, handle.epoch))
+            .is_some_and(|validator| !validator(region_id, envelope.ownership_epoch))
         {
             return Err(RouteError::EpochMismatch {
                 region_id,
@@ -152,7 +161,7 @@ impl RegionCoordinator {
             });
         }
 
-        // 3. Non-blocking backpressure send
+        // 4. Non-blocking backpressure send
         match handle.cmd_tx.try_send(envelope) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(RouteError::ServerBusy { region_id }),
@@ -200,8 +209,11 @@ impl RegionCoordinator {
             .map_err(|e| CoordinatorError::WorkerCommunication(e.to_string()))
     }
 
-    /// Stops a region worker and waits for shutdown drain.
-    pub fn stop_region(&self, region_id: RegionId) -> Result<(), CoordinatorError> {
+    /// Stops a region worker, ensuring all unacknowledged durable loot intents are drained without loss.
+    pub fn stop_region(
+        &self,
+        region_id: RegionId,
+    ) -> Result<Vec<DurableLootIntent>, CoordinatorError> {
         let handle = self
             .get_region(region_id)
             .ok_or(CoordinatorError::UnknownRegion(region_id))?;
@@ -210,26 +222,38 @@ impl RegionCoordinator {
 
         if let Some(join_handle) = self.threads.write().unwrap().remove(&region_id) {
             let _ = join_handle.join();
+        } else {
+            let start = std::time::Instant::now();
+            while !handle.is_stopped() && start.elapsed() < std::time::Duration::from_secs(2) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         }
 
-        Ok(())
+        let drained = handle.drained_intents();
+        self.drained_intents
+            .write()
+            .unwrap()
+            .entry(region_id)
+            .or_default()
+            .extend(drained.clone());
+
+        Ok(drained)
     }
 
-    /// Stops all registered regions and waits for clean thread termination.
-    pub fn stop_all(&self) {
-        let handles: Vec<(RegionId, RegionHandle)> = {
+    /// Stops all registered regions and collects all unacknowledged durable loot intents across regions.
+    pub fn stop_all(&self) -> HashMap<RegionId, Vec<DurableLootIntent>> {
+        let region_ids: Vec<RegionId> = {
             let regions = self.regions.read().unwrap();
-            regions.iter().map(|(id, h)| (*id, h.clone())).collect()
+            regions.keys().copied().collect()
         };
 
-        for (_, handle) in &handles {
-            let _ = handle.control_tx.try_send(ControlMessage::Shutdown);
+        let mut results = HashMap::new();
+        for id in region_ids {
+            if let Ok(drained) = self.stop_region(id) {
+                results.insert(id, drained);
+            }
         }
-
-        let mut threads = self.threads.write().unwrap();
-        for (_, thread) in threads.drain() {
-            let _ = thread.join();
-        }
+        results
     }
 
     /// Inspects the current status of a region asynchronously.
@@ -284,6 +308,13 @@ impl RegionCoordinator {
             let _ = join_handle.join();
         }
 
+        self.drained_intents
+            .write()
+            .unwrap()
+            .entry(region_id)
+            .or_default()
+            .extend(drained_intents.clone());
+
         Ok(drained_intents)
     }
 
@@ -305,5 +336,20 @@ impl RegionCoordinator {
         resp_rx
             .await
             .map_err(|e| CoordinatorError::WorkerCommunication(e.to_string()))
+    }
+
+    /// Returns any unacknowledged durable loot intents saved from stopped regions.
+    pub fn get_saved_drained_intents(&self, region_id: RegionId) -> Vec<DurableLootIntent> {
+        self.drained_intents
+            .read()
+            .unwrap()
+            .get(&region_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Drains all accumulated saved intents across all stopped regions for persistence outbox handoff.
+    pub fn drain_all_saved_intents(&self) -> HashMap<RegionId, Vec<DurableLootIntent>> {
+        std::mem::take(&mut *self.drained_intents.write().unwrap())
     }
 }

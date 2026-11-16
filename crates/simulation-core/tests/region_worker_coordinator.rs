@@ -27,6 +27,16 @@ fn create_test_envelope(
     seq: u64,
     payload: CommandPayload,
 ) -> CommandEnvelope {
+    create_test_envelope_with_epoch(region_id, entity_id, seq, 1, payload)
+}
+
+fn create_test_envelope_with_epoch(
+    region_id: RegionId,
+    entity_id: EntityId,
+    seq: u64,
+    ownership_epoch: u64,
+    payload: CommandPayload,
+) -> CommandEnvelope {
     CommandEnvelope::new(
         CommandId::new(),
         entity_id,
@@ -34,8 +44,8 @@ fn create_test_envelope(
         SessionId::new(),
         seq,
         1,
-        1,
         0,
+        ownership_epoch,
         payload,
     )
 }
@@ -217,14 +227,15 @@ async fn test_rgn_004_epoch_validation_hook() {
     let coordinator = RegionCoordinator::new().with_epoch_validator(validator);
     let region_id = RegionId::new();
 
-    let _handle = coordinator
+    let handle = coordinator
         .spawn_region(region_id, 1, MapGrid::new(16, 16), 1, None)
         .unwrap();
 
     let actor = EntityId::new();
-    let valid_cmd = create_test_envelope(
+    let valid_cmd = create_test_envelope_with_epoch(
         region_id,
         actor,
+        1,
         1,
         CommandPayload::Move {
             target_x: 1000,
@@ -232,30 +243,81 @@ async fn test_rgn_004_epoch_validation_hook() {
         },
     );
 
-    // Initial epoch 1 matches
+    // Initial epoch 1 matches worker epoch and external validator
     assert!(coordinator.route_command(valid_cmd).is_ok());
 
-    // Invalidate epoch (e.g. lease expired or bumped to 2)
-    allowed_epoch.store(2, Ordering::SeqCst);
-
-    let stale_cmd = create_test_envelope(
+    // Stale command with epoch 0 must be rejected immediately at ingress
+    let stale_cmd_low = create_test_envelope_with_epoch(
         region_id,
         actor,
+        2,
+        0,
+        CommandPayload::Move {
+            target_x: 1000,
+            target_y: 1000,
+        },
+    );
+    assert_eq!(
+        coordinator.route_command(stale_cmd_low),
+        Err(RouteError::EpochMismatch {
+            region_id,
+            expected: 1
+        })
+    );
+
+    // Command with future epoch 2 must be rejected at ingress
+    let mismatched_cmd_high = create_test_envelope_with_epoch(
+        region_id,
+        actor,
+        3,
         2,
         CommandPayload::Move {
             target_x: 1000,
             target_y: 1000,
         },
     );
-
-    let res = coordinator.route_command(stale_cmd);
     assert_eq!(
-        res,
+        coordinator.route_command(mismatched_cmd_high),
         Err(RouteError::EpochMismatch {
             region_id,
             expected: 1
         })
     );
+
+    // Invalidate external validator lease (e.g. lease moved to 2)
+    allowed_epoch.store(2, Ordering::SeqCst);
+
+    let lease_invalidated_cmd = create_test_envelope_with_epoch(
+        region_id,
+        actor,
+        4,
+        1,
+        CommandPayload::Move {
+            target_x: 1000,
+            target_y: 1000,
+        },
+    );
+    assert_eq!(
+        coordinator.route_command(lease_invalidated_cmd),
+        Err(RouteError::EpochMismatch {
+            region_id,
+            expected: 1
+        })
+    );
+
+    // Worker defense-in-depth: directly enqueued command with stale epoch is discarded by worker
+    let bypass_cmd = create_test_envelope_with_epoch(
+        region_id,
+        actor,
+        5,
+        99,
+        CommandPayload::Move {
+            target_x: 1000,
+            target_y: 1000,
+        },
+    );
+    handle.cmd_tx.try_send(bypass_cmd).unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     coordinator.stop_all();
 }
@@ -498,7 +560,7 @@ async fn test_rgn_009_graceful_shutdown_drain_preserves_all_pending_intents() {
     // Sleep a few ticks
     tokio::time::sleep(Duration::from_millis(30)).await;
 
-    // Gracefully shutdown and drain via coordinator
+    // Gracefully shutdown and drain via coordinator stop_region_drain
     let drained = coordinator.stop_region_drain(region_id).await.unwrap();
     let _ = thread.join();
 
@@ -508,6 +570,64 @@ async fn test_rgn_009_graceful_shutdown_drain_preserves_all_pending_intents() {
     assert!(ids.contains(&id2));
     assert!(ids.contains(&id3));
     assert_eq!(handle.status(), RegionStatus::Stopped);
+
+    // Verify synchronous stop_region also drains pending intents with zero loss
+    let region_id2 = RegionId::new();
+    let (mut worker2, handle2) = RegionWorker::new(region_id2, 1, MapGrid::new(16, 16), 22, None);
+    worker2.set_tick_interval(Duration::from_millis(10));
+    let id4 = uuid::Uuid::new_v4();
+    worker2
+        .engine_mut()
+        .pending_loot_intents
+        .push(simulation_core::engine::DurableLootIntent {
+            intent_id: id4,
+            killer_id: EntityId::new(),
+            victim_id: EntityId::new(),
+            item_id: 888,
+            amount: 1,
+            tick: 1,
+        });
+    let thread2 = worker2.spawn_thread();
+    coordinator.register_region(handle2.clone()).unwrap();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let drained2 = coordinator.stop_region(region_id2).unwrap();
+    let _ = thread2.join();
+    assert_eq!(drained2.len(), 1);
+    assert_eq!(drained2[0].intent_id, id4);
+    assert_eq!(handle2.status(), RegionStatus::Stopped);
+
+    // Verify stop_all drains and returns all remaining regions
+    let region_id3 = RegionId::new();
+    let (mut worker3, handle3) = RegionWorker::new(region_id3, 1, MapGrid::new(16, 16), 33, None);
+    worker3.set_tick_interval(Duration::from_millis(10));
+    let id5 = uuid::Uuid::new_v4();
+    worker3
+        .engine_mut()
+        .pending_loot_intents
+        .push(simulation_core::engine::DurableLootIntent {
+            intent_id: id5,
+            killer_id: EntityId::new(),
+            victim_id: EntityId::new(),
+            item_id: 999,
+            amount: 5,
+            tick: 1,
+        });
+    let thread3 = worker3.spawn_thread();
+    coordinator.register_region(handle3.clone()).unwrap();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let all_drained = coordinator.stop_all();
+    let _ = thread3.join();
+    assert!(all_drained.contains_key(&region_id3));
+    assert_eq!(all_drained.get(&region_id3).unwrap().len(), 1);
+    assert_eq!(all_drained.get(&region_id3).unwrap()[0].intent_id, id5);
+
+    // Verify coordinator saved intents outbox contains all drained intents
+    let saved_intents = coordinator.drain_all_saved_intents();
+    assert!(saved_intents.contains_key(&region_id));
+    assert!(saved_intents.contains_key(&region_id2));
+    assert!(saved_intents.contains_key(&region_id3));
 }
 
 #[tokio::test]
