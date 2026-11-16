@@ -105,7 +105,12 @@ impl RegionHandle {
 
     /// Checks if the worker has stopped.
     pub fn is_stopped(&self) -> bool {
-        self.status() == RegionStatus::Stopped || self.is_shutdown.load(Ordering::Relaxed)
+        self.status() == RegionStatus::Stopped
+    }
+
+    /// Checks if shutdown has been signaled to this worker.
+    pub fn is_shutdown_requested(&self) -> bool {
+        self.is_shutdown.load(Ordering::Relaxed)
     }
 
     /// Returns all unacknowledged durable loot intents extracted during shutdown.
@@ -400,7 +405,6 @@ impl RegionWorker {
     /// Clean shutdown drain: drains remaining commands, updates state to Stopped.
     fn drain_shutdown(&mut self) {
         self.is_shutdown.store(true, Ordering::Relaxed);
-        *self.status.write().unwrap() = RegionStatus::Stopped;
 
         // Drain any remaining persistence acks
         self.process_persistence_acks();
@@ -419,5 +423,8 @@ impl RegionWorker {
         if let Some(tx) = self.drain_tx.take() {
             let _ = tx.send(pending);
         }
+
+        // Set Stopped status ONLY after all intents and acks are safely drained
+        *self.status.write().unwrap() = RegionStatus::Stopped;
     }
 }

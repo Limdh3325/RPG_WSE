@@ -588,11 +588,12 @@ async fn test_rgn_009_graceful_shutdown_drain_preserves_all_pending_intents() {
             tick: 1,
         });
     let thread2 = worker2.spawn_thread();
-    coordinator.register_region(handle2.clone()).unwrap();
+    coordinator
+        .register_region_with_thread(handle2.clone(), thread2)
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     let drained2 = coordinator.stop_region(region_id2).unwrap();
-    let _ = thread2.join();
     assert_eq!(drained2.len(), 1);
     assert_eq!(drained2[0].intent_id, id4);
     assert_eq!(handle2.status(), RegionStatus::Stopped);
@@ -614,11 +615,12 @@ async fn test_rgn_009_graceful_shutdown_drain_preserves_all_pending_intents() {
             tick: 1,
         });
     let thread3 = worker3.spawn_thread();
-    coordinator.register_region(handle3.clone()).unwrap();
+    coordinator
+        .register_region_with_thread(handle3.clone(), thread3)
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     let all_drained = coordinator.stop_all();
-    let _ = thread3.join();
     assert!(all_drained.contains_key(&region_id3));
     assert_eq!(all_drained.get(&region_id3).unwrap().len(), 1);
     assert_eq!(all_drained.get(&region_id3).unwrap()[0].intent_id, id5);
@@ -628,6 +630,39 @@ async fn test_rgn_009_graceful_shutdown_drain_preserves_all_pending_intents() {
     assert!(saved_intents.contains_key(&region_id));
     assert!(saved_intents.contains_key(&region_id2));
     assert!(saved_intents.contains_key(&region_id3));
+
+    // Verify saturated control channel does not block or lose intents on shutdown
+    let region_id4 = RegionId::new();
+    let (mut worker4, handle4) = RegionWorker::new(region_id4, 1, MapGrid::new(16, 16), 44, None);
+    worker4.set_tick_interval(Duration::from_millis(10));
+    let id6 = uuid::Uuid::new_v4();
+    worker4
+        .engine_mut()
+        .pending_loot_intents
+        .push(simulation_core::engine::DurableLootIntent {
+            intent_id: id6,
+            killer_id: EntityId::new(),
+            victim_id: EntityId::new(),
+            item_id: 321,
+            amount: 2,
+            tick: 1,
+        });
+    let thread4 = worker4.spawn_thread();
+    coordinator
+        .register_region_with_thread(handle4.clone(), thread4)
+        .unwrap();
+
+    // Saturate control channel to its 64-message capacity
+    for _ in 0..64 {
+        let _ = handle4.control_tx.try_send(ControlMessage::Pause);
+    }
+    assert!(handle4.control_tx.try_send(ControlMessage::Pause).is_err());
+
+    // Stop region must cleanly unblock via atomic shutdown flag, join, and drain intents
+    let drained4 = coordinator.stop_region(region_id4).unwrap();
+    assert_eq!(drained4.len(), 1);
+    assert_eq!(drained4[0].intent_id, id6);
+    assert_eq!(handle4.status(), RegionStatus::Stopped);
 }
 
 #[tokio::test]

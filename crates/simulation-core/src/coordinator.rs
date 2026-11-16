@@ -110,6 +110,18 @@ impl RegionCoordinator {
         Ok(())
     }
 
+    /// Registers an externally spawned region worker along with its join handle.
+    pub fn register_region_with_thread(
+        &self,
+        handle: RegionHandle,
+        thread: JoinHandle<()>,
+    ) -> Result<(), CoordinatorError> {
+        let region_id = handle.region_id;
+        self.register_region(handle)?;
+        self.threads.write().unwrap().insert(region_id, thread);
+        Ok(())
+    }
+
     /// Retrieves the handle for an active region.
     #[must_use]
     pub fn get_region(&self, region_id: RegionId) -> Option<RegionHandle> {
@@ -218,7 +230,22 @@ impl RegionCoordinator {
             .get_region(region_id)
             .ok_or(CoordinatorError::UnknownRegion(region_id))?;
 
-        let _ = handle.control_tx.try_send(ControlMessage::Shutdown);
+        // 1. Signal shutdown flag so worker exits loop even if control channel is saturated
+        handle
+            .is_shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // 2. Deliver Shutdown message, retrying briefly if buffer is currently full
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(500) {
+            match handle.control_tx.try_send(ControlMessage::Shutdown) {
+                Ok(()) => break,
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        }
 
         if let Some(join_handle) = self.threads.write().unwrap().remove(&region_id) {
             let _ = join_handle.join();
@@ -297,7 +324,8 @@ impl RegionCoordinator {
         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
         handle
             .control_tx
-            .try_send(ControlMessage::ShutdownDrain(resp_tx))
+            .send(ControlMessage::ShutdownDrain(resp_tx))
+            .await
             .map_err(|e| CoordinatorError::WorkerCommunication(e.to_string()))?;
 
         let drained_intents = resp_rx
