@@ -232,7 +232,7 @@ fn test_mov_004_speed_limit_enforced() {
     let (fx, fy, tx, ty) = move_event.unwrap();
     let dx = tx - fx;
     let dy = ty - fy;
-    let dist = (((dx * dx + dy * dy) as f64).sqrt()) as i64;
+    let dist = ((dx * dx + dy * dy).unsigned_abs().isqrt()) as i64;
     assert!(
         dist <= 200,
         "Distance moved in single tick ({dist}) must not exceed speed (200)"
@@ -774,4 +774,424 @@ fn test_mov_006_set_velocity_i32_min_overflow() {
         rejected,
         "SetVelocity with i32::MIN must be safely rejected without panic"
     );
+}
+
+#[test]
+fn test_mov_007_dynamic_obstacle_repath_around_barrier_to_arrival() {
+    let mut engine = create_test_engine(42);
+    let player = EntityId::new();
+    let session_id = SessionId::new();
+    let region_id = engine.world.meta.region_id;
+
+    // Spawn at (1500, 1500) = tile (1, 1)
+    engine.spawn_actor(player, 1500, 1500, 200).unwrap();
+
+    // Move to (1500, 4500) = tile (1, 4)
+    let cmd = CommandEnvelope::new(
+        CommandId::new(),
+        player,
+        region_id,
+        session_id,
+        1,
+        1,
+        1,
+        0,
+        CommandPayload::Move {
+            target_x: 1500,
+            target_y: 4500,
+        },
+    );
+    engine.submit_envelope(cmd).unwrap();
+    let out = engine.step().unwrap();
+    assert!(out.events.iter().any(|e| matches!(
+        e,
+        SimulationEvent::NavigationStateChanged {
+            state: NavigationState::Following,
+            ..
+        }
+    )));
+
+    // Block tile (1, 2) dynamically while leaving tile (2, 2) open for detour
+    engine.world.grid.set_tile_blocked(1, 2, true);
+
+    // Run ticks until arrived or timeout (max 60 ticks)
+    let mut arrived = false;
+    for _ in 0..60 {
+        let step_out = engine.step().unwrap();
+        if step_out.events.iter().any(|e| {
+            matches!(
+                e,
+                SimulationEvent::NavigationStateChanged {
+                    state: NavigationState::Arrived,
+                    ..
+                }
+            )
+        }) {
+            arrived = true;
+            break;
+        }
+    }
+    assert!(
+        arrived,
+        "Actor should successfully replan around dynamic barrier and arrive"
+    );
+
+    let p_ent = engine.world.get_entity(player).unwrap();
+    let pos = engine.world.world.entity(p_ent).get::<Position>().unwrap();
+    assert_eq!(pos.x_millitile, 1500);
+    assert_eq!(pos.y_millitile, 4500);
+}
+
+#[test]
+fn test_mov_008_unreachable_tile_no_path_blocked_diagnostics() {
+    let mut engine = create_test_engine(42);
+    let player = EntityId::new();
+    let session_id = SessionId::new();
+    let region_id = engine.world.meta.region_id;
+
+    engine.spawn_actor(player, 1500, 1500, 200).unwrap();
+
+    // Enclose start position (1, 1) completely so open set exhausts before budget
+    engine.world.grid.set_tile_blocked(1, 0, true);
+    engine.world.grid.set_tile_blocked(1, 2, true);
+    engine.world.grid.set_tile_blocked(0, 1, true);
+    engine.world.grid.set_tile_blocked(2, 1, true);
+
+    let cmd = CommandEnvelope::new(
+        CommandId::new(),
+        player,
+        region_id,
+        session_id,
+        1,
+        1,
+        1,
+        0,
+        CommandPayload::Move {
+            target_x: 5500,
+            target_y: 5500,
+        },
+    );
+    engine.submit_envelope(cmd).unwrap();
+    let out = engine.step().unwrap();
+
+    let blocked_event = out.events.iter().find(|e| {
+        matches!(
+            e,
+            SimulationEvent::NavigationStateChanged {
+                state: NavigationState::Blocked,
+                ..
+            }
+        )
+    });
+    assert!(
+        blocked_event.is_some(),
+        "Unreachable goal must transition to Blocked navigation state"
+    );
+    if let Some(SimulationEvent::NavigationStateChanged { reason, .. }) = blocked_event {
+        assert!(
+            reason
+                .as_ref()
+                .is_some_and(|r| r.contains("no walkable path to goal")),
+            "Blocked event should diagnose 'no walkable path to goal'"
+        );
+    }
+}
+
+#[test]
+fn test_mov_009_dead_actor_commands_rejected() {
+    let mut engine = create_test_engine(42);
+    let player = EntityId::new();
+    let session_id = SessionId::new();
+    let region_id = engine.world.meta.region_id;
+
+    engine.spawn_actor(player, 1500, 1500, 100).unwrap();
+
+    // Kill the actor
+    let p_ent = engine.world.get_entity(player).unwrap();
+    {
+        let mut ent_mut = engine.world.world.entity_mut(p_ent);
+        let mut hp = ent_mut.get_mut::<Health>().unwrap();
+        hp.current = 0;
+        hp.status = CombatStatus::Dead;
+    }
+
+    // Attempt Move on tick 1
+    let cmd_move = CommandEnvelope::new(
+        CommandId::new(),
+        player,
+        region_id,
+        session_id,
+        1,
+        1,
+        1,
+        0,
+        CommandPayload::Move {
+            target_x: 2500,
+            target_y: 2500,
+        },
+    );
+    engine.submit_envelope(cmd_move).unwrap();
+    let out_move = engine.step().unwrap();
+    assert!(out_move.events.iter().any(|e| matches!(
+        e,
+        SimulationEvent::CommandRejected { reason, .. } if reason.contains("entity is dead")
+    )));
+
+    // Attempt SetVelocity on tick 2
+    let cmd_vel = CommandEnvelope::new(
+        CommandId::new(),
+        player,
+        region_id,
+        session_id,
+        2,
+        2,
+        2,
+        0,
+        CommandPayload::SetVelocity { dx: 100, dy: 100 },
+    );
+    engine.submit_envelope(cmd_vel).unwrap();
+    let out_vel = engine.step().unwrap();
+    assert!(out_vel.events.iter().any(|e| matches!(
+        e,
+        SimulationEvent::CommandRejected { reason, .. } if reason.contains("entity is dead")
+    )));
+}
+
+#[test]
+fn test_mov_010_nonexistent_actor_command_rejected() {
+    let mut engine = create_test_engine(42);
+    let fake_player = EntityId::new();
+    let session_id = SessionId::new();
+    let region_id = engine.world.meta.region_id;
+
+    let cmd = CommandEnvelope::new(
+        CommandId::new(),
+        fake_player,
+        region_id,
+        session_id,
+        1,
+        1,
+        1,
+        0,
+        CommandPayload::Move {
+            target_x: 2500,
+            target_y: 2500,
+        },
+    );
+    engine.submit_envelope(cmd).unwrap();
+    let out = engine.step().unwrap();
+    assert!(out.events.iter().any(|e| matches!(
+        e,
+        SimulationEvent::CommandRejected { reason, .. } if reason.contains("entity not found")
+    )));
+}
+
+#[test]
+fn test_cmb_008_dead_attacker_or_dead_target_attack_rejected() {
+    let mut engine = create_test_engine(42);
+    let player = EntityId::new();
+    let session_id = SessionId::new();
+    let region_id = engine.world.meta.region_id;
+
+    engine.spawn_actor(player, 1500, 1500, 100).unwrap();
+    let goblin = engine
+        .spawn_monster(MonsterArchetype::GoblinScout, 1600, 1500)
+        .unwrap();
+
+    // Target already dead
+    let g_ent = engine.world.get_entity(goblin).unwrap();
+    {
+        let mut g_mut = engine.world.world.entity_mut(g_ent);
+        let mut g_hp = g_mut.get_mut::<Health>().unwrap();
+        g_hp.current = 0;
+        g_hp.status = CombatStatus::Dead;
+    }
+
+    let cmd_attack_dead = CommandEnvelope::new(
+        CommandId::new(),
+        player,
+        region_id,
+        session_id,
+        1,
+        1,
+        1,
+        0,
+        CommandPayload::Attack { target_id: goblin },
+    );
+    engine.submit_envelope(cmd_attack_dead).unwrap();
+    let out1 = engine.step().unwrap();
+    assert!(out1.events.iter().any(|e| matches!(
+        e,
+        SimulationEvent::CommandRejected { reason, .. } if reason.contains("target is not alive")
+    )));
+
+    // Revive goblin, kill player
+    {
+        let mut g_mut2 = engine.world.world.entity_mut(g_ent);
+        let mut g_hp2 = g_mut2.get_mut::<Health>().unwrap();
+        g_hp2.current = 30;
+        g_hp2.status = CombatStatus::Alive;
+    }
+    let p_ent = engine.world.get_entity(player).unwrap();
+    {
+        let mut p_mut = engine.world.world.entity_mut(p_ent);
+        let mut p_hp = p_mut.get_mut::<Health>().unwrap();
+        p_hp.current = 0;
+        p_hp.status = CombatStatus::Dead;
+    }
+
+    let cmd_dead_player_attack = CommandEnvelope::new(
+        CommandId::new(),
+        player,
+        region_id,
+        session_id,
+        2,
+        2,
+        2,
+        0,
+        CommandPayload::Attack { target_id: goblin },
+    );
+    engine.submit_envelope(cmd_dead_player_attack).unwrap();
+    let out2 = engine.step().unwrap();
+    assert!(out2.events.iter().any(|e| matches!(
+        e,
+        SimulationEvent::CommandRejected { reason, .. } if reason.contains("entity is dead")
+    )));
+}
+
+#[test]
+fn test_cmb_009_nonexistent_combatants_attack_rejected() {
+    let mut engine = create_test_engine(42);
+    let player = EntityId::new();
+    let session_id = SessionId::new();
+    let region_id = engine.world.meta.region_id;
+
+    engine.spawn_actor(player, 1500, 1500, 100).unwrap();
+    let fake_target = EntityId::new();
+
+    let cmd = CommandEnvelope::new(
+        CommandId::new(),
+        player,
+        region_id,
+        session_id,
+        1,
+        1,
+        1,
+        0,
+        CommandPayload::Attack {
+            target_id: fake_target,
+        },
+    );
+    engine.submit_envelope(cmd).unwrap();
+    let out = engine.step().unwrap();
+    assert!(out.events.iter().any(|e| matches!(
+        e,
+        SimulationEvent::CommandRejected { reason, .. } if reason.contains("target entity not found")
+    )));
+}
+
+#[test]
+fn test_cmb_010_deterministic_movement_and_combat_simulation() {
+    let mut engine1 = create_test_engine(99);
+    let mut engine2 = create_test_engine(99);
+
+    let p1 = EntityId::from_u128(101);
+    let p2 = p1; // Same ID for exact replay determinism
+    let s_id = SessionId::new();
+    let reg = engine1.world.meta.region_id;
+
+    engine1.spawn_actor(p1, 1000, 1000, 200).unwrap();
+    engine2.spawn_actor(p2, 1000, 1000, 200).unwrap();
+
+    let g1 = engine1
+        .spawn_monster_with_id(
+            EntityId::from_u128(202),
+            MonsterArchetype::GoblinScout,
+            1500,
+            1000,
+        )
+        .unwrap();
+    let g2 = engine2
+        .spawn_monster_with_id(
+            EntityId::from_u128(202),
+            MonsterArchetype::GoblinScout,
+            1500,
+            1000,
+        )
+        .unwrap();
+
+    // Move and attack sequence
+    for t in 1..=30 {
+        if t == 1 {
+            let cmd_move1 = CommandEnvelope::new(
+                CommandId::from_u128(1001),
+                p1,
+                reg,
+                s_id,
+                1,
+                1,
+                t,
+                0,
+                CommandPayload::Move {
+                    target_x: 1400,
+                    target_y: 1000,
+                },
+            );
+            let cmd_move2 = CommandEnvelope::new(
+                CommandId::from_u128(1001),
+                p2,
+                reg,
+                s_id,
+                1,
+                1,
+                t,
+                0,
+                CommandPayload::Move {
+                    target_x: 1400,
+                    target_y: 1000,
+                },
+            );
+            engine1.submit_envelope(cmd_move1).unwrap();
+            engine2.submit_envelope(cmd_move2).unwrap();
+        } else if t == 5 {
+            let cmd_atk1 = CommandEnvelope::new(
+                CommandId::from_u128(1002),
+                p1,
+                reg,
+                s_id,
+                2,
+                5,
+                t,
+                0,
+                CommandPayload::Attack { target_id: g1 },
+            );
+            let cmd_atk2 = CommandEnvelope::new(
+                CommandId::from_u128(1002),
+                p2,
+                reg,
+                s_id,
+                2,
+                5,
+                t,
+                0,
+                CommandPayload::Attack { target_id: g2 },
+            );
+            engine1.submit_envelope(cmd_atk1).unwrap();
+            engine2.submit_envelope(cmd_atk2).unwrap();
+        }
+
+        let out1 = engine1.step().unwrap();
+        let out2 = engine2.step().unwrap();
+
+        assert_eq!(out1.tick, out2.tick);
+        assert_eq!(
+            out1.state_hash, out2.state_hash,
+            "State hash must match bit-exact on tick {t}"
+        );
+        assert_eq!(
+            out1.events.len(),
+            out2.events.len(),
+            "Event counts must match on tick {t}"
+        );
+    }
 }

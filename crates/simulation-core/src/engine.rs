@@ -200,14 +200,14 @@ impl SimulationEngine {
         Ok(())
     }
 
-    /// Spawns a monster entity with Position, Health, CombatStats, Navigation, and MonsterArchetype.
-    pub fn spawn_monster(
+    /// Spawns a monster entity of the given archetype with a specified entity ID.
+    pub fn spawn_monster_with_id(
         &mut self,
+        entity_id: EntityId,
         archetype: MonsterArchetype,
         x_millitile: i64,
         y_millitile: i64,
     ) -> Result<EntityId, DomainError> {
-        let entity_id = EntityId::new();
         let max_hp = archetype.max_health();
         let combat_stats = archetype.combat_stats();
         let speed = archetype.movement_speed_millitiles_per_tick();
@@ -227,6 +227,16 @@ impl SimulationEngine {
             .id();
         self.world.index.insert(entity_id, entity)?;
         Ok(entity_id)
+    }
+
+    /// Spawns a monster entity with Position, Health, CombatStats, Navigation, and MonsterArchetype.
+    pub fn spawn_monster(
+        &mut self,
+        archetype: MonsterArchetype,
+        x_millitile: i64,
+        y_millitile: i64,
+    ) -> Result<EntityId, DomainError> {
+        self.spawn_monster_with_id(EntityId::new(), archetype, x_millitile, y_millitile)
     }
 
     /// Advances the simulation by exactly one tick, tracking telemetry for clock degradation.
@@ -895,8 +905,7 @@ impl SimulationEngine {
                                 let dy_128 = wp.1 as i128 - pos.y_millitile as i128;
                                 let dist_sq = (dx_128.unsigned_abs() * dx_128.unsigned_abs())
                                     .saturating_add(dy_128.unsigned_abs() * dy_128.unsigned_abs());
-                                let dist = ((dist_sq as f64).sqrt()) as i64;
-                                let dist = dist.max(1);
+                                let dist = (dist_sq.isqrt() as i64).max(1);
                                 let speed = nav.speed_millitiles_per_tick.max(50);
 
                                 let from_x = pos.x_millitile;
