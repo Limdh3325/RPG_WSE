@@ -911,40 +911,113 @@ impl SimulationEngine {
                                 let from_x = pos.x_millitile;
                                 let from_y = pos.y_millitile;
 
-                                if dist <= speed {
-                                    pos.x_millitile = wp.0;
-                                    pos.y_millitile = wp.1;
-                                    nav.current_waypoint_idx += 1;
-                                    if nav.current_waypoint_idx >= nav.waypoints.len() {
-                                        nav.state = NavigationState::Arrived;
+                                let (cand_x, cand_y, waypoint_reached) = if dist <= speed {
+                                    (wp.0, wp.1, true)
+                                } else {
+                                    let step_x = ((dx_128 * speed as i128) / dist as i128) as i64;
+                                    let step_y = ((dy_128 * speed as i128) / dist as i128) as i64;
+                                    (
+                                        pos.x_millitile.saturating_add(step_x),
+                                        pos.y_millitile.saturating_add(step_y),
+                                        false,
+                                    )
+                                };
+
+                                let from_tx = from_x / 1000;
+                                let from_ty = from_y / 1000;
+                                let cand_tx = cand_x / 1000;
+                                let cand_ty = cand_y / 1000;
+
+                                let is_diagonal = from_tx != cand_tx && from_ty != cand_ty;
+                                let corner_cut = is_diagonal
+                                    && (!self.world.grid.is_tile_walkable(from_tx, cand_ty)
+                                        || !self.world.grid.is_tile_walkable(cand_tx, from_ty));
+
+                                let step_walkable = cand_x >= 0
+                                    && cand_y >= 0
+                                    && self.world.grid.is_in_bounds_millitile(cand_x, cand_y)
+                                    && self.world.grid.is_millitile_walkable(cand_x, cand_y)
+                                    && !corner_cut;
+
+                                if !step_walkable {
+                                    match (nav.target_x_millitile, nav.target_y_millitile) {
+                                        (Some(gx), Some(gy)) => {
+                                            match crate::pathfinding::astar_path(
+                                                &self.world.grid,
+                                                (pos.x_millitile, pos.y_millitile),
+                                                (gx, gy),
+                                                512,
+                                            ) {
+                                                Ok(new_waypoints) => {
+                                                    nav.waypoints = new_waypoints;
+                                                    nav.current_waypoint_idx = 0;
+                                                }
+                                                Err(err) => {
+                                                    let reason = format!("path obstructed: {err}");
+                                                    nav.state = NavigationState::Blocked;
+                                                    nav.failure_reason = Some(reason.clone());
+                                                    emit(
+                                                        SimulationEvent::NavigationStateChanged {
+                                                            entity_id: *id,
+                                                            state: NavigationState::Blocked,
+                                                            reason: Some(reason),
+                                                        },
+                                                        &mut self.event_budget,
+                                                        &mut events,
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            let reason =
+                                                "path obstructed: unwalkable tile".to_string();
+                                            nav.state = NavigationState::Blocked;
+                                            nav.failure_reason = Some(reason.clone());
+                                            emit(
+                                                SimulationEvent::NavigationStateChanged {
+                                                    entity_id: *id,
+                                                    state: NavigationState::Blocked,
+                                                    reason: Some(reason),
+                                                },
+                                                &mut self.event_budget,
+                                                &mut events,
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    pos.x_millitile = cand_x;
+                                    pos.y_millitile = cand_y;
+
+                                    if waypoint_reached {
+                                        nav.current_waypoint_idx += 1;
+                                        if nav.current_waypoint_idx >= nav.waypoints.len() {
+                                            nav.state = NavigationState::Arrived;
+                                            emit(
+                                                SimulationEvent::NavigationStateChanged {
+                                                    entity_id: *id,
+                                                    state: NavigationState::Arrived,
+                                                    reason: None,
+                                                },
+                                                &mut self.event_budget,
+                                                &mut events,
+                                            );
+                                        }
+                                    }
+
+                                    if pos.x_millitile != from_x || pos.y_millitile != from_y {
                                         emit(
-                                            SimulationEvent::NavigationStateChanged {
+                                            SimulationEvent::EntityMoved {
                                                 entity_id: *id,
-                                                state: NavigationState::Arrived,
-                                                reason: None,
+                                                from_x,
+                                                from_y,
+                                                to_x: pos.x_millitile,
+                                                to_y: pos.y_millitile,
                                             },
                                             &mut self.event_budget,
                                             &mut events,
                                         );
                                     }
-                                } else {
-                                    let step_x = ((dx_128 * speed as i128) / dist as i128) as i64;
-                                    let step_y = ((dy_128 * speed as i128) / dist as i128) as i64;
-                                    pos.x_millitile = pos.x_millitile.saturating_add(step_x);
-                                    pos.y_millitile = pos.y_millitile.saturating_add(step_y);
                                 }
-
-                                emit(
-                                    SimulationEvent::EntityMoved {
-                                        entity_id: *id,
-                                        from_x,
-                                        from_y,
-                                        to_x: pos.x_millitile,
-                                        to_y: pos.y_millitile,
-                                    },
-                                    &mut self.event_budget,
-                                    &mut events,
-                                );
                             }
                         }
                     }

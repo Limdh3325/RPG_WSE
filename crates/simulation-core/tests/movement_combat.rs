@@ -1195,3 +1195,59 @@ fn test_cmb_010_deterministic_movement_and_combat_simulation() {
         );
     }
 }
+
+#[test]
+fn test_mov_011_candidate_step_into_blocked_tile_is_rejected_and_repaths() {
+    let mut engine = create_test_engine(42);
+    let player = EntityId::new();
+    let session_id = SessionId::new();
+    let region_id = engine.world.meta.region_id;
+
+    // Spawn player at (500, 500) = tile (0, 0)
+    engine.spawn_actor(player, 500, 500, 300).unwrap();
+
+    // Block entire column 1 for y=0..64 to make tile (2, 0) completely unreachable
+    for y in 0..64 {
+        engine.world.grid.set_tile_blocked(1, y, true);
+    }
+
+    // Try to move directly through the blocked wall to tile (2, 0)
+    let cmd = CommandEnvelope::new(
+        CommandId::new(),
+        player,
+        region_id,
+        session_id,
+        1,
+        1,
+        1,
+        0,
+        CommandPayload::Move {
+            target_x: 2500,
+            target_y: 500,
+        },
+    );
+    engine.submit_envelope(cmd).unwrap();
+
+    // Step several ticks: player must NEVER cross x >= 1000 into the blocked wall
+    for _ in 0..10 {
+        let out = engine.step().unwrap();
+        let p_ent = engine.world.get_entity(player).unwrap();
+        let pos = engine.world.world.entity(p_ent).get::<Position>().unwrap();
+        assert!(
+            pos.x_millitile < 1000,
+            "Player at x={} must never enter blocked tile (x >= 1000)",
+            pos.x_millitile
+        );
+        if out.events.iter().any(|e| {
+            matches!(
+                e,
+                SimulationEvent::NavigationStateChanged {
+                    state: NavigationState::Blocked,
+                    ..
+                }
+            )
+        }) {
+            break;
+        }
+    }
+}
