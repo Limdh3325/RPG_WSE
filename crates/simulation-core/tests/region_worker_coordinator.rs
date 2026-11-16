@@ -265,14 +265,32 @@ async fn test_rgn_005_tick_lag_detection_and_recovery() {
     let region_id = RegionId::new();
     let (mut worker, handle) = RegionWorker::new(region_id, 1, MapGrid::new(16, 16), 99, None);
 
-    // Use fast 10ms tick interval for testing
+    // Fast tick interval (10ms) and short lag threshold (5ms)
     worker.set_tick_interval(Duration::from_millis(10));
+    worker.set_lag_threshold(Duration::from_millis(5));
     let thread = worker.spawn_thread();
 
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert_eq!(handle.health(), RegionHealth::Healthy);
+
+    // Induce artificial tick lag (12ms > 5ms threshold)
+    handle
+        .control_tx
+        .try_send(ControlMessage::SetTestTickDelay(Duration::from_millis(12)))
+        .unwrap();
+    // Allow >= 3 ticks to accumulate consecutive lag
+    tokio::time::sleep(Duration::from_millis(70)).await;
+    assert_eq!(handle.health(), RegionHealth::Degraded);
+
+    // Recover tick delay back to 0ms (< 5ms threshold)
+    handle
+        .control_tx
+        .try_send(ControlMessage::SetTestTickDelay(Duration::ZERO))
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(handle.health(), RegionHealth::Healthy);
 
-    // Send control message or simulate health state check
+    // Verify Pause / Resume controls
     handle.control_tx.try_send(ControlMessage::Pause).unwrap();
     tokio::time::sleep(Duration::from_millis(30)).await;
     assert_eq!(handle.status(), RegionStatus::Paused);
@@ -369,9 +387,200 @@ async fn test_rgn_007_persistence_ack_prioritization_and_settlement() {
     // Allow worker tick to process ACK
     tokio::time::sleep(Duration::from_millis(150)).await;
 
-    // Intent must now be acknowledged and settled
+    // Intent must now be acknowledged and settled (not pending)
+    let remaining = coordinator.drain_region_intents(region_id).await.unwrap();
+    assert!(
+        remaining.is_empty(),
+        "intent should have been settled by ACK"
+    );
+
     coordinator.stop_region(region_id).unwrap();
     let _ = thread.join();
 
     assert!(handle.is_stopped());
+}
+
+#[tokio::test]
+async fn test_rgn_008_unrelated_entity_ticks_continue_during_persistence_delay() {
+    let coordinator = RegionCoordinator::new();
+    let region_id = RegionId::new();
+
+    let (mut worker, handle) = RegionWorker::new(region_id, 1, MapGrid::new(32, 32), 42, None);
+    worker.set_tick_interval(Duration::from_millis(10));
+
+    // Entity A has an unsettled pending durable loot intent
+    let intent_uuid = uuid::Uuid::new_v4();
+    worker
+        .engine_mut()
+        .pending_loot_intents
+        .push(simulation_core::engine::DurableLootIntent {
+            intent_id: intent_uuid,
+            killer_id: EntityId::new(),
+            victim_id: EntityId::new(),
+            item_id: 202,
+            amount: 1,
+            tick: 1,
+        });
+
+    // Spawn Entity B (player) at (1000, 1000) with 1000 speed
+    let actor_b = EntityId::new();
+    worker
+        .engine_mut()
+        .spawn_actor(actor_b, 1000, 1000, 1000)
+        .unwrap();
+
+    coordinator.register_region(handle.clone()).unwrap();
+    let thread = worker.spawn_thread();
+
+    // Send Move command for Entity B
+    let move_cmd = create_test_envelope(
+        region_id,
+        actor_b,
+        1,
+        CommandPayload::Move {
+            target_x: 5000,
+            target_y: 1000,
+        },
+    );
+    assert!(coordinator.route_command(move_cmd).is_ok());
+
+    // Sleep for 60ms (~6 ticks) while persistence ACK is "delayed"
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    // Verify status: Region is healthy, active, and ticks advanced
+    let status = coordinator.inspect_status(region_id).await.unwrap();
+    assert_eq!(status.status, RegionStatus::Active);
+    assert_eq!(status.health, RegionHealth::Healthy);
+    assert!(
+        status.current_tick >= 5,
+        "ticks must continue advancing during persistence delay"
+    );
+
+    // Intent is still pending (not lost, not corrupted)
+    let drained = coordinator.drain_region_intents(region_id).await.unwrap();
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0].intent_id, intent_uuid);
+
+    coordinator.stop_region(region_id).unwrap();
+    let _ = thread.join();
+}
+
+#[tokio::test]
+async fn test_rgn_009_graceful_shutdown_drain_preserves_all_pending_intents() {
+    let coordinator = RegionCoordinator::new();
+    let region_id = RegionId::new();
+
+    let (mut worker, handle) = RegionWorker::new(region_id, 1, MapGrid::new(16, 16), 11, None);
+    worker.set_tick_interval(Duration::from_millis(10));
+
+    // Register 3 un-persisted durable loot intents
+    let id1 = uuid::Uuid::new_v4();
+    let id2 = uuid::Uuid::new_v4();
+    let id3 = uuid::Uuid::new_v4();
+
+    for id in [id1, id2, id3] {
+        worker
+            .engine_mut()
+            .pending_loot_intents
+            .push(simulation_core::engine::DurableLootIntent {
+                intent_id: id,
+                killer_id: EntityId::new(),
+                victim_id: EntityId::new(),
+                item_id: 777,
+                amount: 3,
+                tick: 1,
+            });
+    }
+
+    coordinator.register_region(handle.clone()).unwrap();
+    let thread = worker.spawn_thread();
+
+    // Sleep a few ticks
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    // Gracefully shutdown and drain via coordinator
+    let drained = coordinator.stop_region_drain(region_id).await.unwrap();
+    let _ = thread.join();
+
+    assert_eq!(drained.len(), 3, "all 3 pending intents must be preserved");
+    let ids: Vec<_> = drained.iter().map(|i| i.intent_id).collect();
+    assert!(ids.contains(&id1));
+    assert!(ids.contains(&id2));
+    assert!(ids.contains(&id3));
+    assert_eq!(handle.status(), RegionStatus::Stopped);
+}
+
+#[tokio::test]
+async fn test_rgn_010_persistence_acks_processed_before_commands_in_tick() {
+    let region_id = RegionId::new();
+    let (mut worker, handle) = RegionWorker::new(region_id, 1, MapGrid::new(16, 16), 1, None);
+    worker.set_tick_interval(Duration::from_millis(10));
+
+    let intent_id = uuid::Uuid::new_v4();
+    worker
+        .engine_mut()
+        .pending_loot_intents
+        .push(simulation_core::engine::DurableLootIntent {
+            intent_id,
+            killer_id: EntityId::new(),
+            victim_id: EntityId::new(),
+            item_id: 100,
+            amount: 1,
+            tick: 1,
+        });
+
+    // Pre-queue ACK into persistence channel
+    handle
+        .ack_tx
+        .try_send(PersistenceAck {
+            intent_id,
+            success: true,
+            reason: None,
+        })
+        .unwrap();
+
+    let thread = worker.spawn_thread();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    handle
+        .control_tx
+        .try_send(ControlMessage::Shutdown)
+        .unwrap();
+    let _ = thread.join();
+
+    assert_eq!(handle.status(), RegionStatus::Stopped);
+}
+
+#[tokio::test]
+async fn test_rgn_011_accumulated_drift_ceiling_prevents_death_spiral() {
+    let region_id = RegionId::new();
+    let (mut worker, handle) = RegionWorker::new(region_id, 1, MapGrid::new(16, 16), 1, None);
+    worker.set_tick_interval(Duration::from_millis(10));
+    let thread = worker.spawn_thread();
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    // Induce a 550ms severe drift tick (> 500ms MAX_ACCUMULATED_DRIFT_MS)
+    handle
+        .control_tx
+        .try_send(ControlMessage::SetTestTickDelay(Duration::from_millis(520)))
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(560)).await;
+
+    // Reset delay to zero; worker should immediately recover normal pacing without burst catchup
+    handle
+        .control_tx
+        .try_send(ControlMessage::SetTestTickDelay(Duration::ZERO))
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(handle.status(), RegionStatus::Active);
+
+    handle
+        .control_tx
+        .try_send(ControlMessage::Shutdown)
+        .unwrap();
+    let _ = thread.join();
+    assert_eq!(handle.status(), RegionStatus::Stopped);
 }

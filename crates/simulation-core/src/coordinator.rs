@@ -13,7 +13,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::command::CommandEnvelope;
-use crate::engine::TickOutput;
+use crate::engine::{DurableLootIntent, TickOutput};
 use crate::worker::{
     ControlMessage, PersistenceAck, RegionHandle, RegionHealth, RegionStatus, RegionWorker,
     RegionWorkerStatus,
@@ -259,5 +259,51 @@ impl RegionCoordinator {
     /// Inspects the status of a region synchronously.
     pub fn get_status(&self, region_id: RegionId) -> Option<RegionStatus> {
         self.get_region(region_id).map(|h| h.status())
+    }
+
+    /// Stops a region worker, gracefully draining all pending durable loot intents before termination.
+    pub async fn stop_region_drain(
+        &self,
+        region_id: RegionId,
+    ) -> Result<Vec<DurableLootIntent>, CoordinatorError> {
+        let handle = self
+            .get_region(region_id)
+            .ok_or(CoordinatorError::UnknownRegion(region_id))?;
+
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle
+            .control_tx
+            .try_send(ControlMessage::ShutdownDrain(resp_tx))
+            .map_err(|e| CoordinatorError::WorkerCommunication(e.to_string()))?;
+
+        let drained_intents = resp_rx
+            .await
+            .map_err(|e| CoordinatorError::WorkerCommunication(e.to_string()))?;
+
+        if let Some(join_handle) = self.threads.write().unwrap().remove(&region_id) {
+            let _ = join_handle.join();
+        }
+
+        Ok(drained_intents)
+    }
+
+    /// Drains pending durable loot intents from an active region without shutting it down.
+    pub async fn drain_region_intents(
+        &self,
+        region_id: RegionId,
+    ) -> Result<Vec<DurableLootIntent>, CoordinatorError> {
+        let handle = self
+            .get_region(region_id)
+            .ok_or(CoordinatorError::UnknownRegion(region_id))?;
+
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle
+            .control_tx
+            .try_send(ControlMessage::DrainIntents(resp_tx))
+            .map_err(|e| CoordinatorError::WorkerCommunication(e.to_string()))?;
+
+        resp_rx
+            .await
+            .map_err(|e| CoordinatorError::WorkerCommunication(e.to_string()))
     }
 }

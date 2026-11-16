@@ -22,7 +22,7 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::oneshot;
 
 use crate::command::CommandEnvelope;
-use crate::engine::{SimulationEngine, TickOutput};
+use crate::engine::{DurableLootIntent, SimulationEngine, TickOutput};
 
 /// Bounded channel capacities matching system specification.
 pub const COMMAND_CHANNEL_CAPACITY: usize = 4096;
@@ -60,6 +60,9 @@ pub enum ControlMessage {
     Resume,
     SetMode(SimulationMode),
     Shutdown,
+    ShutdownDrain(oneshot::Sender<Vec<DurableLootIntent>>),
+    DrainIntents(oneshot::Sender<Vec<DurableLootIntent>>),
+    SetTestTickDelay(Duration),
     InspectStatus(oneshot::Sender<RegionWorkerStatus>),
 }
 
@@ -118,6 +121,9 @@ pub struct RegionWorker {
     command_rx: Receiver<CommandEnvelope>,
     event_tx: Option<Sender<TickOutput>>,
     tick_interval: Duration,
+    lag_threshold: Duration,
+    test_tick_delay: Duration,
+    drain_tx: Option<oneshot::Sender<Vec<DurableLootIntent>>>,
 }
 
 impl RegionWorker {
@@ -167,6 +173,9 @@ impl RegionWorker {
             command_rx: cmd_rx,
             event_tx,
             tick_interval: Duration::from_millis(DEFAULT_TICK_INTERVAL_MS),
+            lag_threshold: Duration::from_millis(LAG_THRESHOLD_MS),
+            test_tick_delay: Duration::ZERO,
+            drain_tx: None,
         };
 
         (worker, handle)
@@ -191,6 +200,16 @@ impl RegionWorker {
     /// Sets custom tick interval (useful for faster deterministic testing).
     pub fn set_tick_interval(&mut self, interval: Duration) {
         self.tick_interval = interval;
+    }
+
+    /// Sets custom lag threshold duration.
+    pub fn set_lag_threshold(&mut self, threshold: Duration) {
+        self.lag_threshold = threshold;
+    }
+
+    /// Sets an artificial tick delay (used to test lag detection and catch-up recovery).
+    pub fn set_test_tick_delay(&mut self, delay: Duration) {
+        self.test_tick_delay = delay;
     }
 
     /// Main loop executed on the dedicated worker OS thread.
@@ -231,6 +250,9 @@ impl RegionWorker {
 
             // D. Execute Tick
             let step_start = Instant::now();
+            if self.test_tick_delay > Duration::ZERO {
+                std::thread::sleep(self.test_tick_delay);
+            }
             match self.engine.step() {
                 Ok(output) => {
                     let step_duration = step_start.elapsed();
@@ -238,7 +260,7 @@ impl RegionWorker {
                     last_tick_duration_ms = step_duration_ms;
 
                     // Lag detection and health status management
-                    if step_duration_ms > LAG_THRESHOLD_MS {
+                    if step_duration > self.lag_threshold {
                         consecutive_lagged_ticks = consecutive_lagged_ticks.saturating_add(1);
                         if consecutive_lagged_ticks >= 2 {
                             *self.health.write().unwrap() = RegionHealth::Degraded;
@@ -311,6 +333,17 @@ impl RegionWorker {
                 ControlMessage::Shutdown => {
                     return true;
                 }
+                ControlMessage::ShutdownDrain(resp_tx) => {
+                    self.drain_tx = Some(resp_tx);
+                    return true;
+                }
+                ControlMessage::DrainIntents(resp_tx) => {
+                    let intents = self.engine.drain_pending_loot_intents();
+                    let _ = resp_tx.send(intents);
+                }
+                ControlMessage::SetTestTickDelay(delay) => {
+                    self.test_tick_delay = delay;
+                }
                 ControlMessage::InspectStatus(resp_tx) => {
                     let status = RegionWorkerStatus {
                         region_id: self.region_id,
@@ -354,5 +387,11 @@ impl RegionWorker {
 
         // Drain remaining commands (discarding or rejecting gracefully)
         while self.command_rx.try_recv().is_ok() {}
+
+        // Drain pending intents if requested via ShutdownDrain
+        let pending = self.engine.drain_pending_loot_intents();
+        if let Some(tx) = self.drain_tx.take() {
+            let _ = tx.send(pending);
+        }
     }
 }

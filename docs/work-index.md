@@ -9,3 +9,4 @@
 | WORK-20261115-01 | 작업 측정 체계 추가 | [요청](../inbox/WORK-20261115-01.md) | [결과](../outbox/WORK-20261115-01.md) | DONE | 미커밋·미통합 | 현재 발견 없음 |
 | WORK-20261116-01 | TASK-004 Command & Event Contracts | [요청](../inbox/WORK-20261116-01.md) | [결과](../outbox/WORK-20261116-01.md) | DONE | 미통합 (feature 브랜치) | 현재 발견 없음 |
 | WORK-20261116-02 | TASK-005 Movement + Combat Minimal Systems | [요청](../inbox/WORK-20261116-02.md) | [결과](../outbox/WORK-20261116-02.md) | DONE | 미통합 (feature 브랜치) | 현재 발견 없음 |
+| WORK-20261116-03 | TASK-006 Tokio Region Worker / Coordinator | [요청](../inbox/WORK-20261116-03.md) | [결과](../outbox/WORK-20261116-03.md) | DONE | 미통합 (feature 브랜치) | 현재 발견 없음 |

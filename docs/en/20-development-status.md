@@ -12,7 +12,7 @@ Baseline: the new nmain engine. Test results from the previous game are not evid
 | 003 Tick | F-001/003, N-001 | 10,000-Tick state/event hashes | DONE (local gate passed) |
 | 004 Contracts | F-004/009, N-008 | Duplicates/order/version/rule cycles | DONE (Local gate passed) |
 | 005 Movement/combat | F-007/008/015 | Collision/paths/range/death | DONE (Local gate passed) |
-| 006 Worker | F-005/017, N-005 | Single writer, bounded queues, shutdown | NOT STARTED |
+| 006 Worker | F-005/017, N-005 | Single writer, bounded queues, shutdown | DONE (Local gate passed) |
 | 007 Durable transactions | F-004/005/010, N-004/009 | Real PG, Commit/ACK failpoints | NOT STARTED |
 | 008 Recovery | F-010, N-009 | Checksum/restart/receipt/RNG | NOT STARTED |
 | 009 Networking | F-011, N-006/008 | Two clients/forgery/gaps/reconnect | NOT STARTED |
