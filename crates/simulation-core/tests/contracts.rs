@@ -972,3 +972,77 @@ fn test_rule_engine_child_provenance_preserved_in_output() {
         "Child correlation_id must match parent root correlation_id"
     );
 }
+
+/// Verification test: Ingress ordering, deduplication stress, and deterministic tick execution.
+#[test]
+fn test_cmd_ingress_stress_and_ordering_invariants() {
+    let (mut engine, player) = setup_test_engine(42);
+    let region_id = engine.world.meta.region_id;
+    let session_id = SessionId::from_u128(888);
+
+    // Create 10 commands with randomized arrival order and some duplicate submissions
+    let mut commands = Vec::new();
+    for i in 1..=10 {
+        let cmd = CommandEnvelope::new(
+            CommandId::from_u128(2000 + i),
+            player,
+            region_id,
+            session_id,
+            i as u64,
+            1, // assigned_tick: 1
+            i as u64,
+            0,
+            CommandPayload::Move {
+                target_x: 10_000 + (i as i64 * 100),
+                target_y: 10_000,
+            },
+        );
+        commands.push(cmd);
+    }
+
+    // Submit out of order (reverse)
+    for cmd in commands.iter().rev() {
+        assert!(engine.submit_envelope(cmd.clone()).is_ok());
+    }
+
+    // Attempt to resubmit identical commands (transient duplicate) -> should succeed idempotently
+    for cmd in commands.iter() {
+        assert!(engine.submit_envelope(cmd.clone()).is_ok());
+    }
+
+    // Attempt to submit with conflicting payload for existing command_id -> must fail
+    let conflict_cmd = CommandEnvelope::new(
+        CommandId::from_u128(2001),
+        player,
+        region_id,
+        session_id,
+        1,
+        1,
+        1,
+        0,
+        CommandPayload::Move {
+            target_x: 99_999,
+            target_y: 99_999,
+        },
+    );
+    let submit_result = engine.submit_envelope(conflict_cmd);
+    assert!(
+        submit_result.is_err(),
+        "Conflicting payload must be rejected"
+    );
+
+    // Execute tick 1
+    let output = engine.step().unwrap();
+    assert_eq!(output.tick, 1);
+
+    // Verify deduplicator recorded exactly 10 unique commands
+    assert_eq!(engine.deduplicator.len(), 10);
+    for i in 1..=10 {
+        assert_eq!(
+            engine
+                .deduplicator
+                .get_status(CommandId::from_u128(2000 + i)),
+            Some(CommandStatus::Succeeded)
+        );
+    }
+}
