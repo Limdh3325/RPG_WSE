@@ -1,9 +1,7 @@
-use game_domain::{
-    EntityId, EntityStateDto, PositionDto, RegionId, RegionStateDto, RegionStatus,
-};
+use game_domain::{EntityId, EntityStateDto, PositionDto, RegionId, RegionStateDto, RegionStatus};
 use persistence::{
-    apply_migration, RecoveryManager, ScheduledActionDto, SnapshotDto, SnapshotManager,
-    CURRENT_ENGINE_VERSION, CURRENT_RULES_VERSION, CURRENT_SCHEMA_VERSION,
+    CURRENT_ENGINE_VERSION, CURRENT_RULES_VERSION, CURRENT_SCHEMA_VERSION, RecoveryManager,
+    ScheduledActionDto, SnapshotDto, SnapshotManager, apply_migration,
 };
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
@@ -23,14 +21,20 @@ fn get_test_database_url() -> String {
     format!("{proto}://{user}:{pass}@{host}:{port}/{db}")
 }
 
+static MIGRATION_INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
 async fn setup_db_pool() -> Option<PgPool> {
     let database_url = get_test_database_url();
 
     match PgPool::connect(&database_url).await {
         Ok(pool) => {
-            apply_migration(&pool)
-                .await
-                .expect("Failed to apply schemas/0001_initial.sql");
+            MIGRATION_INIT
+                .get_or_init(|| async {
+                    apply_migration(&pool)
+                        .await
+                        .expect("Failed to apply schemas/0001_initial.sql");
+                })
+                .await;
             Some(pool)
         }
         Err(e) => {

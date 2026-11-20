@@ -1,6 +1,6 @@
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -65,8 +65,8 @@ impl DurableWriter {
 
         if let Some(r) = row {
             let status_str: String = r.get("status");
-            let status = ReceiptStatus::from_str_loose(&status_str)
-                .unwrap_or(ReceiptStatus::Pending);
+            let status =
+                ReceiptStatus::from_str_loose(&status_str).unwrap_or(ReceiptStatus::Pending);
 
             Ok(Some(CommandReceiptRecord {
                 command_id: r.get("command_id"),
@@ -122,8 +122,8 @@ impl DurableWriter {
             }
 
             let status_str: String = row.get("status");
-            let status = ReceiptStatus::from_str_loose(&status_str)
-                .unwrap_or(ReceiptStatus::Pending);
+            let status =
+                ReceiptStatus::from_str_loose(&status_str).unwrap_or(ReceiptStatus::Pending);
 
             match status {
                 ReceiptStatus::Succeeded => {
@@ -258,8 +258,7 @@ impl DurableWriter {
         .execute(&mut *tx)
         .await?;
 
-        if self.has_failpoint("fail_pre_commit").await
-            || self.has_failpoint("before_commit").await
+        if self.has_failpoint("fail_pre_commit").await || self.has_failpoint("before_commit").await
         {
             return Err(PersistenceError::FailpointInjected("before_commit".into()));
         }

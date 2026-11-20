@@ -50,15 +50,10 @@ pub enum PersistenceError {
     InvalidOperation(String),
 
     #[error("Snapshot corrupted: {snapshot_id}, reason: {reason}")]
-    CorruptedSnapshot {
-        snapshot_id: Uuid,
-        reason: String,
-    },
+    CorruptedSnapshot { snapshot_id: Uuid, reason: String },
 
     #[error("Incompatible engine/schema/rules version: {reason}")]
-    IncompatibleVersion {
-        reason: String,
-    },
+    IncompatibleVersion { reason: String },
 
     #[error("Recovery failed: {0}")]
     RecoveryFailed(String),

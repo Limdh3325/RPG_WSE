@@ -1,7 +1,7 @@
 use persistence::{
-    acquire_or_renew_lease, apply_migration, CommandReceiptRecord, DurableEvent, DurableIntent,
-    DurableOperation, DurableWriter, EventDeduplicator, OutboxPublisher, PersistenceError,
-    ReceiptStatus, SqlxEventDeduplicator,
+    CommandReceiptRecord, DurableEvent, DurableIntent, DurableOperation, DurableWriter,
+    EventDeduplicator, OutboxPublisher, PersistenceError, ReceiptStatus, SqlxEventDeduplicator,
+    acquire_or_renew_lease, apply_migration,
 };
 use sqlx::PgPool;
 use std::env;
@@ -20,13 +20,19 @@ fn get_test_database_url() -> String {
     format!("{proto}://{user}:{pass}@{host}:{port}/{db}")
 }
 
+static MIGRATION_INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
 async fn setup_test_pool() -> Option<PgPool> {
     let url = get_test_database_url();
     match PgPool::connect(&url).await {
         Ok(pool) => {
-            apply_migration(&pool)
-                .await
-                .expect("Failed to apply initial schema migration");
+            MIGRATION_INIT
+                .get_or_init(|| async {
+                    apply_migration(&pool)
+                        .await
+                        .expect("Failed to apply initial schema migration");
+                })
+                .await;
             Some(pool)
         }
         Err(e) => {
@@ -191,14 +197,26 @@ async fn test_per_001_failpoint_before_begin_no_state_change() {
     };
 
     let result = writer.commit_intent(intent).await;
-    assert!(result.is_err(), "Expected failure due to before_begin failpoint");
+    assert!(
+        result.is_err(),
+        "Expected failure due to before_begin failpoint"
+    );
 
     // Asset state untouched
-    assert_eq!(get_wallet_balance(&pool, fixture.buyer_wallet_id).await, 1000);
-    assert_eq!(get_market_stock(&pool, fixture.settlement_id, "potion_healing").await, 50);
+    assert_eq!(
+        get_wallet_balance(&pool, fixture.buyer_wallet_id).await,
+        1000
+    );
+    assert_eq!(
+        get_market_stock(&pool, fixture.settlement_id, "potion_healing").await,
+        50
+    );
 
     // No receipt recorded
-    let receipt = writer.query_receipt(command_id).await.expect("query receipt");
+    let receipt = writer
+        .query_receipt(command_id)
+        .await
+        .expect("query receipt");
     assert!(receipt.is_none());
 }
 
@@ -235,11 +253,20 @@ async fn test_per_002_failpoint_before_commit_rolls_back() {
     assert!(result.is_err(), "Expected rollback failure");
 
     // Atomic rollback: balance and stock unchanged!
-    assert_eq!(get_wallet_balance(&pool, fixture.buyer_wallet_id).await, 1000);
-    assert_eq!(get_market_stock(&pool, fixture.settlement_id, "potion_healing").await, 50);
+    assert_eq!(
+        get_wallet_balance(&pool, fixture.buyer_wallet_id).await,
+        1000
+    );
+    assert_eq!(
+        get_market_stock(&pool, fixture.settlement_id, "potion_healing").await,
+        50
+    );
 
     // Receipt is rolled back as well
-    let receipt = writer.query_receipt(command_id).await.expect("query receipt");
+    let receipt = writer
+        .query_receipt(command_id)
+        .await
+        .expect("query receipt");
     assert!(receipt.is_none(), "Pending receipt should be rolled back");
 }
 
@@ -288,13 +315,22 @@ async fn test_per_003_commit_succeeds_ack_lost_lookup_verifies_success() {
     assert!(result.is_err(), "Simulated network drop before ACK return");
 
     // Verification via query_receipt: Transaction actually committed in DB!
-    let receipt = writer.query_receipt(command_id).await.expect("query receipt");
+    let receipt = writer
+        .query_receipt(command_id)
+        .await
+        .expect("query receipt");
     let record: CommandReceiptRecord = receipt.expect("Receipt must exist after commit");
     assert_eq!(record.status, ReceiptStatus::Succeeded);
 
     // Assets deducted exactly once
-    assert_eq!(get_wallet_balance(&pool, fixture.buyer_wallet_id).await, 950);
-    assert_eq!(get_market_stock(&pool, fixture.settlement_id, "potion_healing").await, 45);
+    assert_eq!(
+        get_wallet_balance(&pool, fixture.buyer_wallet_id).await,
+        950
+    );
+    assert_eq!(
+        get_market_stock(&pool, fixture.settlement_id, "potion_healing").await,
+        45
+    );
 
     // Outbox entry exists
     let (outbox_count,): (i64,) = sqlx::query_as("SELECT count(*) FROM outbox WHERE event_id = $1")
@@ -345,7 +381,10 @@ async fn test_per_004_lease_fencing_rejects_stale_epoch() {
     }
 
     // Wallet balance untouched
-    assert_eq!(get_wallet_balance(&pool, fixture.buyer_wallet_id).await, 1000);
+    assert_eq!(
+        get_wallet_balance(&pool, fixture.buyer_wallet_id).await,
+        1000
+    );
 }
 
 #[tokio::test]
@@ -383,8 +422,14 @@ async fn test_per_005_idempotency_100_replays_exactly_one_charge() {
         .await
         .expect("First commit should succeed");
     assert_eq!(first_ack.status, ReceiptStatus::Succeeded);
-    assert_eq!(get_wallet_balance(&pool, fixture.buyer_wallet_id).await, 970);
-    assert_eq!(get_market_stock(&pool, fixture.settlement_id, "potion_healing").await, 47);
+    assert_eq!(
+        get_wallet_balance(&pool, fixture.buyer_wallet_id).await,
+        970
+    );
+    assert_eq!(
+        get_market_stock(&pool, fixture.settlement_id, "potion_healing").await,
+        47
+    );
 
     // Replay 99 times with the exact same command_id and payload
     for _ in 1..100 {
@@ -432,7 +477,10 @@ async fn test_per_006_different_payload_reuse_rejected() {
         emitted_events: vec![],
     };
 
-    writer.commit_intent(intent1.clone()).await.expect("Original commit");
+    writer
+        .commit_intent(intent1.clone())
+        .await
+        .expect("Original commit");
 
     // Reuse command_id with a different payload_hash
     intent1.payload_hash = [6u8; 32];
@@ -519,7 +567,10 @@ async fn test_per_007_two_buyers_competing_for_last_stock() {
 
     // Exactly one must succeed, one must fail with InsufficientStock!
     let successes = (res1.is_ok() as usize) + (res2.is_ok() as usize);
-    assert_eq!(successes, 1, "Exactly one of two concurrent buyers must succeed");
+    assert_eq!(
+        successes, 1,
+        "Exactly one of two concurrent buyers must succeed"
+    );
 
     // Stock must be exactly 0!
     assert_eq!(
@@ -530,7 +581,11 @@ async fn test_per_007_two_buyers_competing_for_last_stock() {
     // Total gold deducted across both buyers must be exactly 10!
     let b1_bal = get_wallet_balance(&pool, fixture.buyer_wallet_id).await;
     let b2_bal = get_wallet_balance(&pool, buyer2_id).await;
-    assert_eq!(b1_bal + b2_bal, 1990, "Total gold deducted must be exactly 10");
+    assert_eq!(
+        b1_bal + b2_bal,
+        1990,
+        "Total gold deducted must be exactly 10"
+    );
 }
 
 #[tokio::test]
@@ -592,8 +647,14 @@ async fn test_per_008_outbox_relay_and_consumer_deduplication() {
 
     // Test SqlxEventDeduplicator (durable across restarts)
     let sqlx_dedup = SqlxEventDeduplicator::new(pool.clone(), "consumer-service-1");
-    let is_new = sqlx_dedup.process_if_new(event_id).await.expect("claim new event");
-    assert!(is_new, "First receipt must be new in durable consumer inbox");
+    let is_new = sqlx_dedup
+        .process_if_new(event_id)
+        .await
+        .expect("claim new event");
+    assert!(
+        is_new,
+        "First receipt must be new in durable consumer inbox"
+    );
 
     // Simulate duplicate delivery to consumer
     let is_dup = sqlx_dedup.is_duplicate(event_id).await.expect("check dup");
@@ -601,12 +662,21 @@ async fn test_per_008_outbox_relay_and_consumer_deduplication() {
 
     // Simulate worker process restart with new deduplicator instance
     let restarted_dedup = SqlxEventDeduplicator::new(pool.clone(), "consumer-service-1");
-    let is_new_after_restart = restarted_dedup.process_if_new(event_id).await.expect("claim after restart");
-    assert!(!is_new_after_restart, "Durable consumer inbox must reject duplicate even after process restart");
+    let is_new_after_restart = restarted_dedup
+        .process_if_new(event_id)
+        .await
+        .expect("claim after restart");
+    assert!(
+        !is_new_after_restart,
+        "Durable consumer inbox must reject duplicate even after process restart"
+    );
 
     // Also verify transient deduplicator
     let is_dup_mem = deduplicator.is_duplicate(event_id).await;
-    assert!(is_dup_mem, "Event must be identified as duplicate in memory");
+    assert!(
+        is_dup_mem,
+        "Event must be identified as duplicate in memory"
+    );
 }
 
 #[tokio::test]

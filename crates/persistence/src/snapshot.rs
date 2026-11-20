@@ -54,8 +54,8 @@ impl SnapshotManager {
     /// Serializes SnapshotDto, calculates its SHA-256 hash, and inserts a row into `region_snapshots`.
     pub async fn save_snapshot(pool: &PgPool, dto: &SnapshotDto) -> Result<Uuid, PersistenceError> {
         let snapshot_id = Uuid::new_v4();
-        let payload = serde_json::to_vec(dto)
-            .map_err(|e| PersistenceError::Serialization(e.to_string()))?;
+        let payload =
+            serde_json::to_vec(dto).map_err(|e| PersistenceError::Serialization(e.to_string()))?;
 
         let mut hasher = Sha256::new();
         hasher.update(&payload);

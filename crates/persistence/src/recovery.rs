@@ -50,43 +50,49 @@ impl RecoveryManager {
         let verified_snapshot =
             SnapshotManager::load_latest_verified_snapshot(pool, region_id).await?;
 
-        let (mut tick, mut committed_event_seq, rng_seed, mut rng_step, mut state, mut scheduled_actions) =
-            if let Some((snapshot_id, snapshot)) = verified_snapshot {
-                info!(
-                    snapshot_id = %snapshot_id,
-                    region_id = %region_id,
-                    tick = snapshot.tick,
-                    event_seq = snapshot.committed_event_seq,
-                    "Restored base state from verified snapshot"
-                );
-                (
-                    snapshot.tick,
-                    snapshot.committed_event_seq,
-                    snapshot.rng_seed,
-                    snapshot.rng_step,
-                    snapshot.state,
-                    snapshot.scheduled_actions,
-                )
-            } else {
-                info!(
-                    region_id = %region_id,
-                    "No valid snapshot found; initializing fresh base state"
-                );
-                (
-                    0,
-                    0,
-                    12345,
-                    0,
-                    RegionStateDto {
-                        region_id: RegionId(region_id),
-                        epoch: new_epoch as u64,
-                        tick: 0,
-                        status: game_domain::RegionStatus::Active,
-                        entities: Vec::new(),
-                    },
-                    Vec::new(),
-                )
-            };
+        let (
+            mut tick,
+            mut committed_event_seq,
+            rng_seed,
+            mut rng_step,
+            mut state,
+            mut scheduled_actions,
+        ) = if let Some((snapshot_id, snapshot)) = verified_snapshot {
+            info!(
+                snapshot_id = %snapshot_id,
+                region_id = %region_id,
+                tick = snapshot.tick,
+                event_seq = snapshot.committed_event_seq,
+                "Restored base state from verified snapshot"
+            );
+            (
+                snapshot.tick,
+                snapshot.committed_event_seq,
+                snapshot.rng_seed,
+                snapshot.rng_step,
+                snapshot.state,
+                snapshot.scheduled_actions,
+            )
+        } else {
+            info!(
+                region_id = %region_id,
+                "No valid snapshot found; initializing fresh base state"
+            );
+            (
+                0,
+                0,
+                12345,
+                0,
+                RegionStateDto {
+                    region_id: RegionId(region_id),
+                    epoch: new_epoch as u64,
+                    tick: 0,
+                    status: game_domain::RegionStatus::Active,
+                    entities: Vec::new(),
+                },
+                Vec::new(),
+            )
+        };
 
         // Always update the state epoch to the freshly acquired lease epoch
         state.epoch = new_epoch as u64;
@@ -125,29 +131,34 @@ impl RecoveryManager {
                     }
                 }
                 "ENTITY_DESPAWNED" => {
-                    if let Some(entity_id_val) = event.payload_json.get("entity_id") {
-                        if let Ok(parsed_id) =
-                            serde_json::from_value::<EntityId>(entity_id_val.clone())
-                        {
-                            state.entities.retain(|e| e.id != parsed_id);
-                        }
+                    if let Ok(Some(parsed_id)) = event
+                        .payload_json
+                        .get("entity_id")
+                        .cloned()
+                        .map(serde_json::from_value::<EntityId>)
+                        .transpose()
+                    {
+                        state.entities.retain(|e| e.id != parsed_id);
                     }
                 }
                 "ENTITY_MOVED" => {
-                    if let (Some(entity_id_val), Some(pos_val)) = (
-                        event.payload_json.get("entity_id"),
-                        event.payload_json.get("position"),
-                    ) {
-                        if let (Ok(parsed_id), Ok(new_pos)) = (
-                            serde_json::from_value::<EntityId>(entity_id_val.clone()),
-                            serde_json::from_value::<PositionDto>(pos_val.clone()),
-                        ) {
-                            if let Some(entity) =
-                                state.entities.iter_mut().find(|e| e.id == parsed_id)
-                            {
-                                entity.position = new_pos;
-                            }
-                        }
+                    let id_res = event
+                        .payload_json
+                        .get("entity_id")
+                        .cloned()
+                        .map(serde_json::from_value::<EntityId>)
+                        .transpose();
+                    let pos_res = event
+                        .payload_json
+                        .get("position")
+                        .cloned()
+                        .map(serde_json::from_value::<PositionDto>)
+                        .transpose();
+
+                    if let (Ok(Some(parsed_id)), Ok(Some(new_pos))) = (id_res, pos_res)
+                        && let Some(entity) = state.entities.iter_mut().find(|e| e.id == parsed_id)
+                    {
+                        entity.position = new_pos;
                     }
                 }
                 "SCHEDULED_ACTION_CREATED" => {
@@ -159,12 +170,14 @@ impl RecoveryManager {
                     }
                 }
                 "SCHEDULED_ACTION_COMPLETED" | "SCHEDULED_ACTION_CANCELLED" => {
-                    if let Some(action_id_val) = event.payload_json.get("action_id") {
-                        if let Ok(action_id) =
-                            serde_json::from_value::<Uuid>(action_id_val.clone())
-                        {
-                            scheduled_actions.retain(|a| a.id != action_id);
-                        }
+                    if let Ok(Some(action_id)) = event
+                        .payload_json
+                        .get("action_id")
+                        .cloned()
+                        .map(serde_json::from_value::<Uuid>)
+                        .transpose()
+                    {
+                        scheduled_actions.retain(|a| a.id != action_id);
                     }
                 }
                 _ => {}
