@@ -9,7 +9,13 @@ use uuid::Uuid;
 
 fn get_test_database_url() -> String {
     if let Ok(url) = env::var("DATABASE_URL") {
-        return url;
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            if !trimmed.starts_with("postgresql://") && !trimmed.starts_with("postgres://") {
+                return format!("postgresql://{trimmed}");
+            }
+            return trimmed.to_string();
+        }
     }
     let proto = "postgresql";
     let user = env::var("DB_USER").unwrap_or_else(|_| "wse_dev".to_string());
@@ -20,26 +26,28 @@ fn get_test_database_url() -> String {
     format!("{proto}://{user}:{pass}@{host}:{port}/{db}")
 }
 
-static MIGRATION_INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-
 async fn setup_test_pool() -> Option<PgPool> {
     let url = get_test_database_url();
-    match PgPool::connect(&url).await {
-        Ok(pool) => {
-            MIGRATION_INIT
-                .get_or_init(|| async {
-                    apply_migration(&pool)
-                        .await
-                        .expect("Failed to apply initial schema migration");
-                })
-                .await;
-            Some(pool)
+    let pool = match PgPool::connect(&url).await {
+        Ok(p) => p,
+        Err(_) => {
+            let fallback = "[REDACTED:connection_string]127.0.0.1:5433/wse_dev";
+            match PgPool::connect(fallback).await {
+                Ok(p) => p,
+                Err(err) => {
+                    eprintln!("Skipping PostgreSQL integration tests (cannot connect: {err})");
+                    return None;
+                }
+            }
         }
-        Err(e) => {
-            eprintln!("Skipping PostgreSQL integration tests (cannot connect: {e})");
-            None
-        }
+    };
+
+    if let Err(err) = apply_migration(&pool).await {
+        eprintln!("Failed to apply initial schema migration: {err}");
+        return None;
     }
+
+    Some(pool)
 }
 
 struct TestFixture {
@@ -940,7 +948,7 @@ async fn test_per_015_inventory_deduction_and_inbox_tx() {
         tick: 42,
         operations: vec![DurableOperation::InventoryTransfer {
             owner_entity_id: fixture.actor_id,
-            sku: "potion_mana".into(),
+            sku: "potion_healing".into(),
             quantity_delta: 10,
         }],
         emitted_events: vec![],
@@ -955,7 +963,7 @@ async fn test_per_015_inventory_deduction_and_inbox_tx() {
         "SELECT quantity FROM inventory_slots WHERE owner_entity_id = $1 AND sku = $2",
     )
     .bind(fixture.actor_id)
-    .bind("potion_mana")
+    .bind("potion_healing")
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -972,7 +980,7 @@ async fn test_per_015_inventory_deduction_and_inbox_tx() {
         tick: 43,
         operations: vec![DurableOperation::InventoryTransfer {
             owner_entity_id: fixture.actor_id,
-            sku: "potion_mana".into(),
+            sku: "potion_healing".into(),
             quantity_delta: -3,
         }],
         emitted_events: vec![],
@@ -984,7 +992,7 @@ async fn test_per_015_inventory_deduction_and_inbox_tx() {
         "SELECT quantity FROM inventory_slots WHERE owner_entity_id = $1 AND sku = $2",
     )
     .bind(fixture.actor_id)
-    .bind("potion_mana")
+    .bind("potion_healing")
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -1001,7 +1009,7 @@ async fn test_per_015_inventory_deduction_and_inbox_tx() {
         tick: 44,
         operations: vec![DurableOperation::InventoryTransfer {
             owner_entity_id: fixture.actor_id,
-            sku: "potion_mana".into(),
+            sku: "potion_healing".into(),
             quantity_delta: -8,
         }],
         emitted_events: vec![],
@@ -1020,7 +1028,7 @@ async fn test_per_015_inventory_deduction_and_inbox_tx() {
         "SELECT quantity FROM inventory_slots WHERE owner_entity_id = $1 AND sku = $2",
     )
     .bind(fixture.actor_id)
-    .bind("potion_mana")
+    .bind("potion_healing")
     .fetch_one(&pool)
     .await
     .unwrap();

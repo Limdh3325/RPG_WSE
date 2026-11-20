@@ -259,6 +259,14 @@ impl RecoveryManager {
 
         state.tick = tick;
 
+        // Verify all events up to the authoritative region sequence were replayed (no missing tail)
+        if committed_event_seq != db_seq as u64 {
+            return Err(PersistenceError::RecoveryFailed(format!(
+                "Event tail missing during recovery: replayed up to sequence {}, but region durable_event_seq is {}",
+                committed_event_seq, db_seq
+            )));
+        }
+
         // Verify that our lease is still valid and not stolen during recovery
         crate::verify_lease_fencing(pool, region_id, new_epoch).await?;
 

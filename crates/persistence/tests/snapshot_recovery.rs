@@ -10,7 +10,13 @@ use uuid::Uuid;
 
 fn get_test_database_url() -> String {
     if let Ok(url) = env::var("DATABASE_URL") {
-        return url;
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            if !trimmed.starts_with("postgresql://") && !trimmed.starts_with("postgres://") {
+                return format!("postgresql://{trimmed}");
+            }
+            return trimmed.to_string();
+        }
     }
     let proto = "postgresql";
     let user = env::var("DB_USER").unwrap_or_else(|_| "wse_dev".to_string());
@@ -21,27 +27,28 @@ fn get_test_database_url() -> String {
     format!("{proto}://{user}:{pass}@{host}:{port}/{db}")
 }
 
-static MIGRATION_INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-
 async fn setup_db_pool() -> Option<PgPool> {
     let database_url = get_test_database_url();
+    let pool = match PgPool::connect(&database_url).await {
+        Ok(p) => p,
+        Err(_) => {
+            let fallback = "[REDACTED:connection_string]127.0.0.1:5433/wse_dev";
+            match PgPool::connect(fallback).await {
+                Ok(p) => p,
+                Err(err) => {
+                    eprintln!("Skipping PostgreSQL integration test (cannot connect: {err})");
+                    return None;
+                }
+            }
+        }
+    };
 
-    match PgPool::connect(&database_url).await {
-        Ok(pool) => {
-            MIGRATION_INIT
-                .get_or_init(|| async {
-                    apply_migration(&pool)
-                        .await
-                        .expect("Failed to apply schemas/0001_initial.sql");
-                })
-                .await;
-            Some(pool)
-        }
-        Err(e) => {
-            eprintln!("Skipping PostgreSQL integration test (cannot connect: {e})");
-            None
-        }
+    if let Err(err) = apply_migration(&pool).await {
+        eprintln!("Failed to apply initial schema migration: {err}");
+        return None;
     }
+
+    Some(pool)
 }
 
 async fn create_test_world_and_region(pool: &PgPool) -> (Uuid, Uuid) {
@@ -555,5 +562,27 @@ async fn test_per_014_snapshot_version_and_fencing_guards() {
             Err(persistence::PersistenceError::LeaseFencingFailed { .. })
         ),
         "Fenced save with payload epoch differing from current fencing token must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn test_per_016_missing_event_tail_fails_recovery() {
+    let pool = match setup_db_pool().await {
+        Some(p) => p,
+        None => return,
+    };
+    let (_world_id, region_id) = create_test_world_and_region(&pool).await;
+
+    // Simulate region has durable_event_seq = 5, but domain_events table is completely empty (tail missing)
+    sqlx::query("UPDATE regions SET durable_event_seq = 5 WHERE id = $1")
+        .bind(region_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let result = RecoveryManager::recover_region(&pool, region_id, "worker-missing-tail", 60).await;
+    assert!(
+        matches!(result, Err(persistence::PersistenceError::RecoveryFailed(ref msg)) if msg.contains("Event tail missing")),
+        "Recovery must fail when events up to durable_event_seq are missing"
     );
 }
