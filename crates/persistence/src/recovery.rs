@@ -24,6 +24,8 @@ pub struct DomainEventRow {
     pub id: Uuid,
     pub event_seq: i64,
     pub event_type: String,
+    pub schema_version: i32,
+    pub rules_version: i32,
     pub tick: i64,
     pub payload_json: serde_json::Value,
 }
@@ -120,7 +122,7 @@ impl RecoveryManager {
         // Step 3: Query committed domain events > snapshot event_seq
         let unapplied_events: Vec<DomainEventRow> = sqlx::query_as(
             r#"
-            SELECT event_id AS id, region_event_seq AS event_seq, event_type, tick, payload AS payload_json
+            SELECT event_id AS id, region_event_seq AS event_seq, event_type, schema_version, rules_version, tick, payload AS payload_json
             FROM domain_events
             WHERE region_id = $1 AND region_event_seq > $2
             ORDER BY region_event_seq ASC
@@ -136,6 +138,24 @@ impl RecoveryManager {
         // Step 4: Replay events into state using deterministic reducer
         let mut expected_seq = committed_event_seq + 1;
         for event in unapplied_events {
+            // Verify event schema and rules version compatibility
+            if event.schema_version != crate::CURRENT_SCHEMA_VERSION as i32
+                || event.rules_version != crate::CURRENT_RULES_VERSION as i32
+            {
+                return Err(PersistenceError::IncompatibleVersion {
+                    reason: format!(
+                        "Domain event {} (type '{}', seq {}) has incompatible version: schema={} (expected {}), rules={} (expected {})",
+                        event.id,
+                        event.event_type,
+                        event.event_seq,
+                        event.schema_version,
+                        crate::CURRENT_SCHEMA_VERSION,
+                        event.rules_version,
+                        crate::CURRENT_RULES_VERSION
+                    ),
+                });
+            }
+
             let ev_seq = event.event_seq as u64;
             if ev_seq != expected_seq {
                 return Err(PersistenceError::RecoveryFailed(format!(

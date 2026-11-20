@@ -34,7 +34,7 @@ async fn setup_db_pool() -> Option<PgPool> {
         Ok(p) => p,
         Err(err) => {
             if has_explicit_db {
-                panic!("Failed to connect to specified DATABASE_URL ({database_url}): {err}");
+                panic!("Failed to connect to specified DATABASE_URL: {err}");
             }
             eprintln!("Skipping PostgreSQL integration test (cannot connect: {err})");
             return None;
@@ -644,5 +644,46 @@ async fn test_per_018_only_incompatible_snapshot_rejects_recovery_without_fallba
             Err(persistence::PersistenceError::IncompatibleVersion { .. })
         ),
         "Recovery must fail with IncompatibleVersion when only incompatible snapshot exists"
+    );
+}
+
+#[tokio::test]
+async fn test_per_019_only_corrupted_snapshot_fails_recovery() {
+    let pool = match setup_db_pool().await {
+        Some(p) => p,
+        None => return,
+    };
+    let (_world_id, region_id) = create_test_world_and_region(&pool).await;
+
+    // Insert only a corrupted snapshot (bad sha256 checksum)
+    let snap_id = Uuid::new_v4();
+    let fake_sha256 = vec![0xEEu8; 32];
+    let corrupt_payload = b"not-a-valid-json-payload".to_vec();
+
+    sqlx::query(
+        r#"
+        INSERT INTO region_snapshots (
+            id, region_id, tick, committed_event_seq, ownership_epoch,
+            schema_version, engine_version, rules_version, sha256, payload
+        ) VALUES ($1, $2, 250, 0, 1, 1, $3, 1, $4, $5)
+        "#,
+    )
+    .bind(snap_id)
+    .bind(region_id)
+    .bind(CURRENT_ENGINE_VERSION)
+    .bind(&fake_sha256)
+    .bind(&corrupt_payload)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // With no valid earlier snapshot, recovery must fail with CorruptedSnapshot instead of silently resetting to genesis
+    let res = RecoveryManager::recover_region(&pool, region_id, "worker-corrupted-check", 60).await;
+    assert!(
+        matches!(
+            res,
+            Err(persistence::PersistenceError::CorruptedSnapshot { .. })
+        ),
+        "Recovery must fail with CorruptedSnapshot when only corrupted snapshot exists"
     );
 }

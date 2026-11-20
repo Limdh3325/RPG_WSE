@@ -37,6 +37,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
         persistence::apply_migration(&pool).await?;
         tracing::info!("database migrations applied successfully; persistence layer ready");
+
+        // Verify/recover default region state from persistence
+        let default_region_id = sqlx::types::Uuid::nil();
+        match persistence::RecoveryManager::recover_region(
+            &pool,
+            default_region_id,
+            "game-server-main",
+            config.region.lease_seconds as i64,
+        )
+        .await
+        {
+            Ok(recovered) => {
+                tracing::info!(
+                    region_id = %recovered.region_id,
+                    tick = recovered.tick,
+                    epoch = recovered.epoch,
+                    entities = recovered.state.entities.len(),
+                    replayed_events = recovered.replayed_events_count,
+                    "default region recovered and leased successfully from persistence"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "default region recovery skipped (fresh uninitialized world); continuing server bootstrap"
+                );
+            }
+        }
     }
 
     let listener = tokio::net::TcpListener::bind(config.server.http_listen).await?;

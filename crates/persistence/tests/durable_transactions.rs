@@ -33,7 +33,7 @@ async fn setup_test_pool() -> Option<PgPool> {
         Ok(p) => p,
         Err(err) => {
             if has_explicit_db {
-                panic!("Failed to connect to specified DATABASE_URL ({url}): {err}");
+                panic!("Failed to connect to specified DATABASE_URL: {err}");
             }
             eprintln!("Skipping PostgreSQL integration tests (cannot connect: {err})");
             return None;

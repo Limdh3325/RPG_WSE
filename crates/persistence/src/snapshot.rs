@@ -166,7 +166,14 @@ impl SnapshotManager {
         .fetch_all(pool)
         .await?;
 
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
         let mut had_incompatible_snapshot = false;
+        let mut had_corrupted_snapshot = false;
+        let mut first_corrupted_id = None;
+
         for row in rows {
             // 0. Verify region identity
             if row.region_id != region_id {
@@ -185,6 +192,10 @@ impl SnapshotManager {
             let calculated_hash = hasher.finalize().to_vec();
 
             if calculated_hash != row.sha256 {
+                had_corrupted_snapshot = true;
+                if first_corrupted_id.is_none() {
+                    first_corrupted_id = Some(row.id);
+                }
                 warn!(
                     snapshot_id = %row.id,
                     tick = row.tick,
@@ -237,6 +248,10 @@ impl SnapshotManager {
                     return Ok(Some((row.id, dto)));
                 }
                 Err(err) => {
+                    had_corrupted_snapshot = true;
+                    if first_corrupted_id.is_none() {
+                        first_corrupted_id = Some(row.id);
+                    }
                     warn!(
                         snapshot_id = %row.id,
                         tick = row.tick,
@@ -248,9 +263,19 @@ impl SnapshotManager {
             }
         }
 
+        // If snapshots existed in the database, but none were valid and compatible:
+        // do not silently fall back to empty genesis state!
         if had_incompatible_snapshot {
             return Err(PersistenceError::IncompatibleVersion {
                 reason: "Found snapshot(s) with incompatible schema/engine/rules version, but no earlier compatible snapshot exists".into(),
+            });
+        }
+
+        if had_corrupted_snapshot {
+            let snap_id = first_corrupted_id.unwrap_or_else(Uuid::nil);
+            return Err(PersistenceError::CorruptedSnapshot {
+                snapshot_id: snap_id,
+                reason: "All existing snapshots failed checksum or payload validation; cannot reset to genesis".into(),
             });
         }
 
