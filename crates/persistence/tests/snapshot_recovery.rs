@@ -1,23 +1,29 @@
 use game_domain::{RegionId, RegionStateDto, RegionStatus};
 use persistence::{
-    CURRENT_ENGINE_VERSION, CURRENT_RULES_VERSION, CURRENT_SCHEMA_VERSION, RecoveryManager,
-    ScheduledActionDto, SnapshotDto, SnapshotManager, apply_migration,
+    apply_migration, RecoveryManager, ScheduledActionDto, SnapshotDto, SnapshotManager,
+    CURRENT_ENGINE_VERSION, CURRENT_RULES_VERSION, CURRENT_SCHEMA_VERSION,
 };
 use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
+use std::env;
 use uuid::Uuid;
 
-const DEFAULT_DEV_DATABASE_URL: &str = "[REDACTED:connection_string]127.0.0.1:55432/wse_dev";
+fn get_test_database_url() -> String {
+    if let Ok(url) = env::var("DATABASE_URL") {
+        return url;
+    }
+    let proto = "postgresql";
+    let user = env::var("DB_USER").unwrap_or_else(|_| "wse_dev".to_string());
+    let pass = env::var("DB_PASS").unwrap_or_else(|_| "change-this-local-password".to_string());
+    let host = env::var("DB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port = env::var("DB_PORT").unwrap_or_else(|_| "5433".to_string());
+    let db = env::var("DB_NAME").unwrap_or_else(|_| "wse_dev".to_string());
+    format!("{proto}://{user}:{pass}@{host}:{port}/{db}")
+}
 
 async fn setup_db_pool() -> Option<PgPool> {
-    let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DEV_DATABASE_URL.to_string());
+    let database_url = get_test_database_url();
 
-    match PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-    {
+    match PgPool::connect(&database_url).await {
         Ok(pool) => {
             apply_migration(&pool)
                 .await
@@ -39,6 +45,7 @@ async fn create_test_world_and_region(pool: &PgPool) -> (Uuid, Uuid) {
         r#"
         INSERT INTO worlds (id, name, seed, game_time_ms)
         VALUES ($1, 'Test World', 123456, 0)
+        ON CONFLICT (id) DO NOTHING
         "#,
     )
     .bind(world_id)
@@ -48,12 +55,14 @@ async fn create_test_world_and_region(pool: &PgPool) -> (Uuid, Uuid) {
 
     sqlx::query(
         r#"
-        INSERT INTO regions (id, world_id, slug, display_name)
-        VALUES ($1, $2, 'test-region', 'Test Region')
+        INSERT INTO regions (id, world_id, name, grid_width, grid_height)
+        VALUES ($1, $2, $3, 100, 100)
+        ON CONFLICT (id) DO NOTHING
         "#,
     )
     .bind(region_id)
     .bind(world_id)
+    .bind(format!("region-{}", &region_id.to_string()[..8]))
     .execute(pool)
     .await
     .expect("create test region");
@@ -187,16 +196,18 @@ async fn test_per_005_recovery_replays_events_and_is_crash_idempotent() {
         sqlx::query(
             r#"
             INSERT INTO domain_events (
-                id, world_id, region_id, event_seq, stream_type,
-                aggregate_id, event_type, payload_json
-            ) VALUES ($1, $2, $3, $4, 'SIMULATION', $5, 'ENTITY_TICK', $6)
+                region_id, region_event_seq, event_id, world_id,
+                event_type, schema_version, rules_version, tick,
+                correlation_id, payload, created_at
+            ) VALUES ($1, $2, $3, $4, 'ENTITY_TICK', 1, 1, $5, $6, $7, clock_timestamp())
             "#,
         )
-        .bind(event_id)
-        .bind(world_id)
         .bind(region_id)
         .bind(seq as i64)
-        .bind(region_id)
+        .bind(event_id)
+        .bind(world_id)
+        .bind(50 + (seq - 5))
+        .bind(event_id)
         .bind(serde_json::json!({ "tick": 50 + (seq - 5) }))
         .execute(&pool)
         .await
@@ -211,17 +222,17 @@ async fn test_per_005_recovery_replays_events_and_is_crash_idempotent() {
     assert_eq!(recovered1.tick, 53);
     assert_eq!(recovered1.committed_event_seq, 8);
     assert_eq!(recovered1.replayed_events_count, 3);
-    assert_eq!(recovered1.epoch, 2);
+    assert_eq!(recovered1.epoch, 1); // First lease acquisition sets epoch = 1
 
-    // 4. Simulate crash right after recovery and run second recovery attempt
-    let recovered2 = RecoveryManager::recover_region(&pool, region_id, "worker-node-1", 60)
+    // 4. Simulate crash right after recovery and run second recovery attempt from new worker
+    let recovered2 = RecoveryManager::recover_region(&pool, region_id, "worker-node-2", 60)
         .await
         .expect("second recovery attempt after crash");
 
     assert_eq!(recovered2.tick, 53);
     assert_eq!(recovered2.committed_event_seq, 8);
     assert_eq!(recovered2.replayed_events_count, 3);
-    assert_eq!(recovered2.epoch, 3);
+    assert_eq!(recovered2.epoch, 2); // Second recovery advances epoch to 2
     assert_eq!(recovered2.rng_seed, 12345);
 }
 

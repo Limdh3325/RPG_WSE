@@ -48,4 +48,21 @@ pub enum PersistenceError {
 
     #[error("Invalid operation: {0}")]
     InvalidOperation(String),
+
+    #[error("Snapshot corrupted: {snapshot_id}, reason: {reason}")]
+    CorruptedSnapshot {
+        snapshot_id: Uuid,
+        reason: String,
+    },
+
+    #[error("Incompatible engine/schema/rules version: {reason}")]
+    IncompatibleVersion {
+        reason: String,
+    },
+
+    #[error("Recovery failed: {0}")]
+    RecoveryFailed(String),
+
+    #[error("Admission paused or rejected due to DB health status")]
+    AdmissionPaused,
 }

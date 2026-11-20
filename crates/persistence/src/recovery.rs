@@ -23,8 +23,6 @@ pub struct RecoveredRegionState {
 pub struct DomainEventRow {
     pub id: Uuid,
     pub event_seq: i64,
-    pub stream_type: String,
-    pub aggregate_id: Uuid,
     pub event_type: String,
     pub payload_json: serde_json::Value,
 }
@@ -95,10 +93,10 @@ impl RecoveryManager {
         // Step 3: Query committed domain events > snapshot event_seq
         let unapplied_events: Vec<DomainEventRow> = sqlx::query_as(
             r#"
-            SELECT id, event_seq, stream_type, aggregate_id, event_type, payload_json
+            SELECT event_id AS id, region_event_seq AS event_seq, event_type, payload AS payload_json
             FROM domain_events
-            WHERE region_id = $1 AND event_seq > $2
-            ORDER BY event_seq ASC
+            WHERE region_id = $1 AND region_event_seq > $2
+            ORDER BY region_event_seq ASC
             "#,
         )
         .bind(region_id)

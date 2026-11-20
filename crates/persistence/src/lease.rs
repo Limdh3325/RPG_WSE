@@ -11,9 +11,9 @@ pub async fn acquire_or_renew_lease(
     let mut tx = pool.begin().await?;
 
     // Lock existing lease row if present
-    let existing: Option<(i64, bool)> = sqlx::query_as(
+    let existing: Option<(i64, bool, Option<String>)> = sqlx::query_as(
         r#"
-        SELECT ownership_epoch, (lease_expires_at > clock_timestamp()) AS is_valid
+        SELECT ownership_epoch, (lease_expires_at > clock_timestamp()) AS is_valid, owner_id
         FROM region_leases
         WHERE region_id = $1
         FOR UPDATE
@@ -24,25 +24,24 @@ pub async fn acquire_or_renew_lease(
     .await?;
 
     let epoch = match existing {
-        Some((current_epoch, is_valid)) => {
-            if is_valid {
-                // Renew within active epoch
+        Some((current_epoch, is_valid, existing_owner)) => {
+            if is_valid && existing_owner.as_deref() == Some(owner_id) {
+                // Renew within active epoch by the same owner
                 sqlx::query(
                     r#"
                     UPDATE region_leases
-                    SET owner_id = $2,
-                        lease_expires_at = clock_timestamp() + ($3 * interval '1 second')
+                    SET lease_expires_at = clock_timestamp() + ($2 * interval '1 second'),
+                        updated_at = clock_timestamp()
                     WHERE region_id = $1
                     "#,
                 )
                 .bind(region_id)
-                .bind(owner_id)
                 .bind(ttl_seconds)
                 .execute(&mut *tx)
                 .await?;
                 current_epoch
             } else {
-                // Expired: increment epoch fencing
+                // Expired or takeover by new owner: increment epoch fencing
                 let next_epoch = current_epoch.saturating_add(1);
                 sqlx::query(
                     r#"
@@ -50,7 +49,7 @@ pub async fn acquire_or_renew_lease(
                     SET owner_id = $2,
                         ownership_epoch = $3,
                         lease_expires_at = clock_timestamp() + ($4 * interval '1 second'),
-                        acquired_at = clock_timestamp()
+                        updated_at = clock_timestamp()
                     WHERE region_id = $1
                     "#,
                 )
@@ -68,7 +67,7 @@ pub async fn acquire_or_renew_lease(
             let initial_epoch: i64 = 1;
             sqlx::query(
                 r#"
-                INSERT INTO region_leases (region_id, owner_id, ownership_epoch, lease_expires_at, acquired_at)
+                INSERT INTO region_leases (region_id, owner_id, ownership_epoch, lease_expires_at, updated_at)
                 VALUES ($1, $2, $3, clock_timestamp() + ($4 * interval '1 second'), clock_timestamp())
                 "#,
             )
@@ -91,25 +90,25 @@ pub async fn verify_lease_fencing_tx(
     region_id: Uuid,
     expected_epoch: i64,
 ) -> Result<(), PersistenceError> {
-    let lease: Option<(i64, bool)> = sqlx::query_as(
+    let lease_row: Option<(i64, bool)> = sqlx::query_as(
         r#"
         SELECT ownership_epoch, (lease_expires_at > clock_timestamp()) AS is_valid
         FROM region_leases
         WHERE region_id = $1
-        FOR UPDATE
+        FOR SHARE
         "#,
     )
     .bind(region_id)
     .fetch_optional(&mut **tx)
     .await?;
 
-    match lease {
-        Some((actual_epoch, is_valid)) => {
-            if actual_epoch != expected_epoch || !is_valid {
+    match lease_row {
+        Some((epoch, is_valid)) => {
+            if epoch != expected_epoch || !is_valid {
                 return Err(PersistenceError::LeaseFencingFailed {
                     region_id,
                     expected_epoch,
-                    actual_epoch: Some(actual_epoch),
+                    actual_epoch: Some(epoch),
                 });
             }
             Ok(())
