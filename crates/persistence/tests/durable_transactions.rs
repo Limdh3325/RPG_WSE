@@ -1,7 +1,7 @@
 use persistence::{
     acquire_or_renew_lease, apply_migration, CommandReceiptRecord, DurableEvent, DurableIntent,
     DurableOperation, DurableWriter, EventDeduplicator, OutboxPublisher, PersistenceError,
-    ReceiptStatus,
+    ReceiptStatus, SqlxEventDeduplicator,
 };
 use sqlx::PgPool;
 use std::env;
@@ -590,11 +590,23 @@ async fn test_per_008_outbox_relay_and_consumer_deduplication() {
 
     assert!(published_count >= 1);
 
+    // Test SqlxEventDeduplicator (durable across restarts)
+    let sqlx_dedup = SqlxEventDeduplicator::new(pool.clone(), "consumer-service-1");
+    let is_new = sqlx_dedup.process_if_new(event_id).await.expect("claim new event");
+    assert!(is_new, "First receipt must be new in durable consumer inbox");
+
     // Simulate duplicate delivery to consumer
-    let is_dup = deduplicator.is_duplicate(event_id).await;
-    assert!(is_dup, "Event must be identified as duplicate");
-    let is_new_again = deduplicator.process_if_new(event_id).await;
-    assert!(!is_new_again, "Duplicate event must be dropped/rejected by deduplicator");
+    let is_dup = sqlx_dedup.is_duplicate(event_id).await.expect("check dup");
+    assert!(is_dup, "Event must be identified as duplicate in DB");
+
+    // Simulate worker process restart with new deduplicator instance
+    let restarted_dedup = SqlxEventDeduplicator::new(pool.clone(), "consumer-service-1");
+    let is_new_after_restart = restarted_dedup.process_if_new(event_id).await.expect("claim after restart");
+    assert!(!is_new_after_restart, "Durable consumer inbox must reject duplicate even after process restart");
+
+    // Also verify transient deduplicator
+    let is_dup_mem = deduplicator.is_duplicate(event_id).await;
+    assert!(is_dup_mem, "Event must be identified as duplicate in memory");
 }
 
 #[tokio::test]

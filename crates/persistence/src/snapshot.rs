@@ -10,7 +10,7 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 pub const CURRENT_ENGINE_VERSION: &str = "0.1.0";
 pub const CURRENT_RULES_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScheduledActionDto {
     pub id: Uuid,
     pub entity_id: Option<Uuid>,
@@ -19,7 +19,7 @@ pub struct ScheduledActionDto {
     pub payload: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotDto {
     pub region_id: Uuid,
     pub tick: u64,
@@ -34,7 +34,7 @@ pub struct SnapshotDto {
     pub scheduled_actions: Vec<ScheduledActionDto>,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow)]
 pub struct SnapshotRow {
     pub id: Uuid,
     pub region_id: Uuid,
@@ -51,17 +51,15 @@ pub struct SnapshotRow {
 pub struct SnapshotManager;
 
 impl SnapshotManager {
-    /// Serializes the snapshot DTO, calculates the SHA-256 checksum,
-    /// and persists it to the `region_snapshots` table.
+    /// Serializes SnapshotDto, calculates its SHA-256 hash, and inserts a row into `region_snapshots`.
     pub async fn save_snapshot(pool: &PgPool, dto: &SnapshotDto) -> Result<Uuid, PersistenceError> {
-        let payload =
-            serde_json::to_vec(dto).map_err(|e| PersistenceError::Serialization(e.to_string()))?;
+        let snapshot_id = Uuid::new_v4();
+        let payload = serde_json::to_vec(dto)
+            .map_err(|e| PersistenceError::Serialization(e.to_string()))?;
 
         let mut hasher = Sha256::new();
         hasher.update(&payload);
-        let sha256_hash: Vec<u8> = hasher.finalize().to_vec();
-
-        let snapshot_id = Uuid::new_v4();
+        let sha256_hash = hasher.finalize().to_vec();
 
         sqlx::query(
             r#"
@@ -87,8 +85,9 @@ impl SnapshotManager {
         Ok(snapshot_id)
     }
 
-    /// Loads the latest snapshot that passes SHA-256 checksum verification and JSON deserialization.
-    /// If the latest snapshot is corrupted, it logs a warning and falls back to the previous valid snapshot (TEST-PER-004).
+    /// Loads the latest snapshot that passes SHA-256 checksum verification, version compatibility,
+    /// and JSON deserialization.
+    /// If corrupted or incompatible, it logs a warning and falls back to the previous valid snapshot.
     pub async fn load_latest_verified_snapshot(
         pool: &PgPool,
         region_id: Uuid,
@@ -107,7 +106,7 @@ impl SnapshotManager {
         .await?;
 
         for row in rows {
-            // Check SHA-256
+            // 1. Verify SHA-256 checksum
             let mut hasher = Sha256::new();
             hasher.update(&row.payload);
             let calculated_hash = hasher.finalize().to_vec();
@@ -121,9 +120,38 @@ impl SnapshotManager {
                 continue;
             }
 
-            // Attempt deserialization
+            // 2. Verify version compatibility with current runtime
+            if row.schema_version != CURRENT_SCHEMA_VERSION as i32
+                || row.rules_version != CURRENT_RULES_VERSION as i32
+                || row.engine_version != CURRENT_ENGINE_VERSION
+            {
+                warn!(
+                    snapshot_id = %row.id,
+                    tick = row.tick,
+                    schema_version = row.schema_version,
+                    engine_version = %row.engine_version,
+                    rules_version = row.rules_version,
+                    "Snapshot has incompatible versions; falling back to earlier snapshot"
+                );
+                continue;
+            }
+
+            // 3. Attempt deserialization & internal version validation
             match serde_json::from_slice::<SnapshotDto>(&row.payload) {
-                Ok(dto) => return Ok(Some((row.id, dto))),
+                Ok(dto) => {
+                    if dto.schema_version != CURRENT_SCHEMA_VERSION
+                        || dto.rules_version != CURRENT_RULES_VERSION
+                        || dto.engine_version != CURRENT_ENGINE_VERSION
+                    {
+                        warn!(
+                            snapshot_id = %row.id,
+                            tick = row.tick,
+                            "Snapshot DTO internal versions incompatible; falling back to earlier snapshot"
+                        );
+                        continue;
+                    }
+                    return Ok(Some((row.id, dto)));
+                }
                 Err(err) => {
                     warn!(
                         snapshot_id = %row.id,

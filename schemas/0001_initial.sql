@@ -259,3 +259,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_inflight_prologue_transfer_per_character
     ON prologue_transfers(character_entity_id)
     WHERE status IN ('PREPARING','PENDING');
 
+CREATE TABLE IF NOT EXISTS consumer_inbox (
+    consumer_id TEXT NOT NULL,
+    event_id UUID NOT NULL,
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (consumer_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_consumer_inbox_event ON consumer_inbox(event_id);

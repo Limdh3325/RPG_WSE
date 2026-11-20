@@ -1,8 +1,11 @@
-use game_domain::{RegionId, RegionStateDto, RegionStatus};
+use game_domain::{
+    EntityId, EntityStateDto, PositionDto, RegionId, RegionStateDto, RegionStatus,
+};
 use persistence::{
     apply_migration, RecoveryManager, ScheduledActionDto, SnapshotDto, SnapshotManager,
     CURRENT_ENGINE_VERSION, CURRENT_RULES_VERSION, CURRENT_SCHEMA_VERSION,
 };
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::env;
 use uuid::Uuid;
@@ -136,7 +139,42 @@ async fn test_per_004_corrupted_snapshot_falls_back_to_last_valid() {
     .await
     .expect("insert corrupt snapshot B");
 
-    // 3. Load latest verified snapshot
+    // 3. Insert Incompatible Version Snapshot C at tick 300 (valid payload but incompatible schema version = 999)
+    let id_c = Uuid::new_v4();
+    let mut dto_c = dto_a.clone();
+    dto_c.tick = 300;
+    dto_c.schema_version = 999;
+    let payload_c = serde_json::to_vec(&dto_c).unwrap();
+    let mut hasher = Sha256::new();
+    hasher.update(&payload_c);
+    let hash_c = hasher.finalize().to_vec();
+
+    sqlx::query(
+        r#"
+        INSERT INTO region_snapshots (
+            id, region_id, tick, committed_event_seq, ownership_epoch,
+            schema_version, engine_version, rules_version, sha256, payload
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        "#,
+    )
+    .bind(id_c)
+    .bind(region_id)
+    .bind(300i64)
+    .bind(30i64)
+    .bind(1i64)
+    .bind(999i32) // Incompatible schema version
+    .bind(CURRENT_ENGINE_VERSION)
+    .bind(CURRENT_RULES_VERSION as i32)
+    .bind(&hash_c)
+    .bind(&payload_c)
+    .execute(&pool)
+    .await
+    .expect("insert incompatible snapshot C");
+
+    // 4. Load latest verified snapshot:
+    // Snapshot C is rejected due to incompatible version;
+    // Snapshot B is rejected due to corrupted SHA256;
+    // Must fall back to Snapshot A!
     let loaded = SnapshotManager::load_latest_verified_snapshot(&pool, region_id)
         .await
         .expect("load verified snapshot");
@@ -149,7 +187,7 @@ async fn test_per_004_corrupted_snapshot_falls_back_to_last_valid() {
     let (loaded_id, loaded_dto) = loaded.unwrap();
     assert_eq!(
         loaded_id, id_a,
-        "Expected snapshot A to be selected after B failed verification"
+        "Expected snapshot A to be selected after B (corrupted) and C (incompatible) failed verification"
     );
     assert_eq!(loaded_dto.tick, 100);
     assert_eq!(loaded_dto.rng_seed, 777);
@@ -190,50 +228,147 @@ async fn test_per_005_recovery_replays_events_and_is_crash_idempotent() {
         .await
         .expect("save snapshot");
 
-    // 2. Insert domain events 6, 7, 8
-    for seq in 6..=8 {
-        let event_id = Uuid::new_v4();
-        sqlx::query(
-            r#"
-            INSERT INTO domain_events (
-                region_id, region_event_seq, event_id, world_id,
-                event_type, schema_version, rules_version, tick,
-                correlation_id, payload, created_at
-            ) VALUES ($1, $2, $3, $4, 'ENTITY_TICK', 1, 1, $5, $6, $7, clock_timestamp())
-            "#,
-        )
-        .bind(region_id)
-        .bind(seq as i64)
-        .bind(event_id)
-        .bind(world_id)
-        .bind(50 + (seq - 5))
-        .bind(event_id)
-        .bind(serde_json::json!({ "tick": 50 + (seq - 5) }))
-        .execute(&pool)
-        .await
-        .expect("insert domain event");
-    }
+    let test_entity_id = EntityId(Uuid::new_v4());
+    let initial_pos = PositionDto {
+        x_millitile: 10000,
+        y_millitile: 20000,
+    };
+    let moved_pos = PositionDto {
+        x_millitile: 35000,
+        y_millitile: 45000,
+    };
+    let action_id = Uuid::new_v4();
+
+    // 2. Insert domain events 6, 7, 8, 9
+    // Event 6: ENTITY_TICK
+    let ev6 = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO domain_events (
+            region_id, region_event_seq, event_id, world_id,
+            event_type, schema_version, rules_version, tick,
+            correlation_id, payload, created_at
+        ) VALUES ($1, 6, $2, $3, 'ENTITY_TICK', 1, 1, 51, $2, $4, clock_timestamp())
+        "#,
+    )
+    .bind(region_id)
+    .bind(ev6)
+    .bind(world_id)
+    .bind(serde_json::json!({ "tick": 51 }))
+    .execute(&pool)
+    .await
+    .expect("insert ev6");
+
+    // Event 7: ENTITY_SPAWNED
+    let ev7 = Uuid::new_v4();
+    let spawned_entity_dto = EntityStateDto {
+        id: test_entity_id,
+        position: initial_pos,
+        velocity: None,
+        health: None,
+        needs: None,
+        personality: None,
+        inventory: None,
+        faction: None,
+        collider: None,
+    };
+    sqlx::query(
+        r#"
+        INSERT INTO domain_events (
+            region_id, region_event_seq, event_id, world_id,
+            event_type, schema_version, rules_version, tick,
+            correlation_id, payload, created_at
+        ) VALUES ($1, 7, $2, $3, 'ENTITY_SPAWNED', 1, 1, 52, $2, $4, clock_timestamp())
+        "#,
+    )
+    .bind(region_id)
+    .bind(ev7)
+    .bind(world_id)
+    .bind(serde_json::to_value(&spawned_entity_dto).unwrap())
+    .execute(&pool)
+    .await
+    .expect("insert ev7");
+
+    // Event 8: ENTITY_MOVED
+    let ev8 = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO domain_events (
+            region_id, region_event_seq, event_id, world_id,
+            event_type, schema_version, rules_version, tick,
+            correlation_id, payload, created_at
+        ) VALUES ($1, 8, $2, $3, 'ENTITY_MOVED', 1, 1, 53, $2, $4, clock_timestamp())
+        "#,
+    )
+    .bind(region_id)
+    .bind(ev8)
+    .bind(world_id)
+    .bind(serde_json::json!({
+        "tick": 53,
+        "entity_id": test_entity_id,
+        "position": moved_pos,
+    }))
+    .execute(&pool)
+    .await
+    .expect("insert ev8");
+
+    // Event 9: SCHEDULED_ACTION_CREATED
+    let ev9 = Uuid::new_v4();
+    let scheduled_action = ScheduledActionDto {
+        id: action_id,
+        entity_id: None,
+        due_tick: 80,
+        action_type: "SPAWN_AMBUSH".to_string(),
+        payload: serde_json::json!({ "monsters": 3 }),
+    };
+    sqlx::query(
+        r#"
+        INSERT INTO domain_events (
+            region_id, region_event_seq, event_id, world_id,
+            event_type, schema_version, rules_version, tick,
+            correlation_id, payload, created_at
+        ) VALUES ($1, 9, $2, $3, 'SCHEDULED_ACTION_CREATED', 1, 1, 54, $2, $4, clock_timestamp())
+        "#,
+    )
+    .bind(region_id)
+    .bind(ev9)
+    .bind(world_id)
+    .bind(serde_json::to_value(&scheduled_action).unwrap())
+    .execute(&pool)
+    .await
+    .expect("insert ev9");
 
     // 3. First recovery attempt
     let recovered1 = RecoveryManager::recover_region(&pool, region_id, "worker-node-1", 60)
         .await
         .expect("first recovery attempt");
 
-    assert_eq!(recovered1.tick, 53);
-    assert_eq!(recovered1.committed_event_seq, 8);
-    assert_eq!(recovered1.replayed_events_count, 3);
-    assert_eq!(recovered1.epoch, 1); // First lease acquisition sets epoch = 1
+    assert_eq!(recovered1.tick, 54);
+    assert_eq!(recovered1.committed_event_seq, 9);
+    assert_eq!(recovered1.replayed_events_count, 4);
+    assert_eq!(recovered1.epoch, 1);
+    assert_eq!(recovered1.rng_step, 11); // advanced by ENTITY_TICK
+
+    // Verify state mutations applied by event reducer
+    assert_eq!(recovered1.state.entities.len(), 1);
+    assert_eq!(recovered1.state.entities[0].id, test_entity_id);
+    assert_eq!(recovered1.state.entities[0].position, moved_pos);
+    assert_eq!(recovered1.scheduled_actions.len(), 1);
+    assert_eq!(recovered1.scheduled_actions[0].id, action_id);
+    assert_eq!(recovered1.scheduled_actions[0].action_type, "SPAWN_AMBUSH");
 
     // 4. Simulate crash right after recovery and run second recovery attempt from new worker
     let recovered2 = RecoveryManager::recover_region(&pool, region_id, "worker-node-2", 60)
         .await
         .expect("second recovery attempt after crash");
 
-    assert_eq!(recovered2.tick, 53);
-    assert_eq!(recovered2.committed_event_seq, 8);
-    assert_eq!(recovered2.replayed_events_count, 3);
+    assert_eq!(recovered2.tick, 54);
+    assert_eq!(recovered2.committed_event_seq, 9);
+    assert_eq!(recovered2.replayed_events_count, 4);
     assert_eq!(recovered2.epoch, 2); // Second recovery advances epoch to 2
-    assert_eq!(recovered2.rng_seed, 12345);
+    assert_eq!(recovered2.state.entities.len(), 1);
+    assert_eq!(recovered2.state.entities[0].position, moved_pos);
+    assert_eq!(recovered2.scheduled_actions.len(), 1);
 }
 
 #[tokio::test]

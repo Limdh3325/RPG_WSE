@@ -16,7 +16,7 @@ pub use models::{
     CommandReceiptRecord, DurableEvent, DurableIntent, DurableOperation, PersistenceAck,
     ReceiptStatus,
 };
-pub use outbox::{EventDeduplicator, OutboxPublisher, OutboxRecord};
+pub use outbox::{EventDeduplicator, OutboxPublisher, OutboxRecord, SqlxEventDeduplicator};
 pub use recovery::{RecoveredRegionState, RecoveryManager};
 pub use snapshot::{
     ScheduledActionDto, SnapshotDto, SnapshotManager, CURRENT_ENGINE_VERSION,
