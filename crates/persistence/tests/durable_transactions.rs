@@ -1129,3 +1129,58 @@ async fn test_per_017_durable_writer_event_recovery_roundtrip() {
     assert_eq!(recovered.replayed_events_count, 2);
     assert_eq!(recovered.committed_event_seq, 2);
 }
+
+#[tokio::test]
+async fn test_per_020_incompatible_event_version_fails_recovery() {
+    let Some(pool) = setup_test_pool().await else {
+        return;
+    };
+    let fixture = create_test_fixture(&pool, 1000, 50).await;
+    let writer = DurableWriter::new(pool.clone());
+
+    let cmd_id = Uuid::new_v4();
+    let ev1 = Uuid::new_v4();
+    let intent = DurableIntent {
+        command_id: cmd_id,
+        world_id: fixture.world_id,
+        region_id: fixture.region_id,
+        ownership_epoch: fixture.epoch,
+        actor_id: Some(fixture.actor_id),
+        payload_hash: [100u8; 32],
+        tick: 51,
+        operations: vec![DurableOperation::WalletTransfer {
+            wallet_id: fixture.buyer_wallet_id,
+            delta: 10,
+        }],
+        emitted_events: vec![DurableEvent {
+            event_id: ev1,
+            event_type: "GoldAdded".into(),
+            schema_version: 999, // Incompatible event schema version
+            rules_version: 1,
+            tick: 51,
+            causation_event_id: None,
+            correlation_id: cmd_id,
+            payload: serde_json::json!({ "wallet_id": fixture.buyer_wallet_id, "amount": 10 }),
+            outbox_topic: None,
+        }],
+    };
+    let ack = writer
+        .commit_intent(intent)
+        .await
+        .expect("commit wallet transfer");
+    assert_eq!(ack.status, ReceiptStatus::Succeeded);
+
+    // Region recovery must fail with IncompatibleVersion because of the incompatible event schema version
+    let res = persistence::RecoveryManager::recover_region(
+        &pool,
+        fixture.region_id,
+        "worker-incompatible-event",
+        60,
+    )
+    .await;
+
+    assert!(
+        matches!(res, Err(PersistenceError::IncompatibleVersion { .. })),
+        "Recovery must fail with IncompatibleVersion when domain event version is unsupported"
+    );
+}

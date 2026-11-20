@@ -177,6 +177,10 @@ impl SnapshotManager {
         for row in rows {
             // 0. Verify region identity
             if row.region_id != region_id {
+                had_corrupted_snapshot = true;
+                if first_corrupted_id.is_none() {
+                    first_corrupted_id = Some(row.id);
+                }
                 warn!(
                     snapshot_id = %row.id,
                     expected_region = %region_id,
@@ -226,6 +230,10 @@ impl SnapshotManager {
             match serde_json::from_slice::<SnapshotDto>(&row.payload) {
                 Ok(dto) => {
                     if dto.region_id != region_id {
+                        had_corrupted_snapshot = true;
+                        if first_corrupted_id.is_none() {
+                            first_corrupted_id = Some(row.id);
+                        }
                         warn!(
                             snapshot_id = %row.id,
                             "Snapshot DTO region_id mismatch; falling back to earlier snapshot"
