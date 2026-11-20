@@ -121,6 +121,17 @@ impl SimulationEngine {
         self.settled_loot_intents.contains(intent_id)
     }
 
+    /// Drains all currently pending durable loot intents from the simulation engine.
+    pub fn drain_pending_loot_intents(&mut self) -> Vec<DurableLootIntent> {
+        std::mem::take(&mut self.pending_loot_intents)
+    }
+
+    /// Returns the number of currently pending durable loot intents.
+    #[must_use]
+    pub fn pending_loot_intent_count(&self) -> usize {
+        self.pending_loot_intents.len()
+    }
+
     /// Registers a custom event rule into the simulation engine.
     pub fn register_rule(&mut self, rule: Box<dyn EventRule>) {
         self.rule_engine.register_rule(rule);

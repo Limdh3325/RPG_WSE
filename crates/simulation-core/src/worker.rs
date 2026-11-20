@@ -22,7 +22,7 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::oneshot;
 
 use crate::command::CommandEnvelope;
-use crate::engine::{SimulationEngine, TickOutput};
+use crate::engine::{DurableLootIntent, SimulationEngine, TickOutput};
 
 /// Bounded channel capacities matching system specification.
 pub const COMMAND_CHANNEL_CAPACITY: usize = 4096;
@@ -60,6 +60,9 @@ pub enum ControlMessage {
     Resume,
     SetMode(SimulationMode),
     Shutdown,
+    ShutdownDrain(oneshot::Sender<Vec<DurableLootIntent>>),
+    DrainIntents(oneshot::Sender<Vec<DurableLootIntent>>),
+    SetTestTickDelay(Duration),
     InspectStatus(oneshot::Sender<RegionWorkerStatus>),
 }
 
@@ -86,6 +89,7 @@ pub struct RegionHandle {
     pub status: Arc<RwLock<RegionStatus>>,
     pub health: Arc<RwLock<RegionHealth>>,
     pub is_shutdown: Arc<AtomicBool>,
+    drained_intents: Arc<RwLock<Vec<DurableLootIntent>>>,
 }
 
 impl RegionHandle {
@@ -101,7 +105,17 @@ impl RegionHandle {
 
     /// Checks if the worker has stopped.
     pub fn is_stopped(&self) -> bool {
-        self.status() == RegionStatus::Stopped || self.is_shutdown.load(Ordering::Relaxed)
+        self.status() == RegionStatus::Stopped
+    }
+
+    /// Checks if shutdown has been signaled to this worker.
+    pub fn is_shutdown_requested(&self) -> bool {
+        self.is_shutdown.load(Ordering::Relaxed)
+    }
+
+    /// Returns all unacknowledged durable loot intents extracted during shutdown.
+    pub fn drained_intents(&self) -> Vec<DurableLootIntent> {
+        self.drained_intents.read().unwrap().clone()
     }
 }
 
@@ -118,6 +132,10 @@ pub struct RegionWorker {
     command_rx: Receiver<CommandEnvelope>,
     event_tx: Option<Sender<TickOutput>>,
     tick_interval: Duration,
+    lag_threshold: Duration,
+    test_tick_delay: Duration,
+    drain_tx: Option<oneshot::Sender<Vec<DurableLootIntent>>>,
+    drained_intents: Arc<RwLock<Vec<DurableLootIntent>>>,
 }
 
 impl RegionWorker {
@@ -144,6 +162,8 @@ impl RegionWorker {
         world.grid = map_grid;
         let engine = SimulationEngine::new(world, seed);
 
+        let drained_intents = Arc::new(RwLock::new(Vec::new()));
+
         let handle = RegionHandle {
             region_id,
             epoch,
@@ -153,6 +173,7 @@ impl RegionWorker {
             status: Arc::clone(&status),
             health: Arc::clone(&health),
             is_shutdown: Arc::clone(&is_shutdown),
+            drained_intents: Arc::clone(&drained_intents),
         };
 
         let worker = Self {
@@ -167,6 +188,10 @@ impl RegionWorker {
             command_rx: cmd_rx,
             event_tx,
             tick_interval: Duration::from_millis(DEFAULT_TICK_INTERVAL_MS),
+            lag_threshold: Duration::from_millis(LAG_THRESHOLD_MS),
+            test_tick_delay: Duration::ZERO,
+            drain_tx: None,
+            drained_intents,
         };
 
         (worker, handle)
@@ -191,6 +216,16 @@ impl RegionWorker {
     /// Sets custom tick interval (useful for faster deterministic testing).
     pub fn set_tick_interval(&mut self, interval: Duration) {
         self.tick_interval = interval;
+    }
+
+    /// Sets custom lag threshold duration.
+    pub fn set_lag_threshold(&mut self, threshold: Duration) {
+        self.lag_threshold = threshold;
+    }
+
+    /// Sets an artificial tick delay (used to test lag detection and catch-up recovery).
+    pub fn set_test_tick_delay(&mut self, delay: Duration) {
+        self.test_tick_delay = delay;
     }
 
     /// Main loop executed on the dedicated worker OS thread.
@@ -231,6 +266,9 @@ impl RegionWorker {
 
             // D. Execute Tick
             let step_start = Instant::now();
+            if self.test_tick_delay > Duration::ZERO {
+                std::thread::sleep(self.test_tick_delay);
+            }
             match self.engine.step() {
                 Ok(output) => {
                     let step_duration = step_start.elapsed();
@@ -238,7 +276,7 @@ impl RegionWorker {
                     last_tick_duration_ms = step_duration_ms;
 
                     // Lag detection and health status management
-                    if step_duration_ms > LAG_THRESHOLD_MS {
+                    if step_duration > self.lag_threshold {
                         consecutive_lagged_ticks = consecutive_lagged_ticks.saturating_add(1);
                         if consecutive_lagged_ticks >= 2 {
                             *self.health.write().unwrap() = RegionHealth::Degraded;
@@ -311,6 +349,17 @@ impl RegionWorker {
                 ControlMessage::Shutdown => {
                     return true;
                 }
+                ControlMessage::ShutdownDrain(resp_tx) => {
+                    self.drain_tx = Some(resp_tx);
+                    return true;
+                }
+                ControlMessage::DrainIntents(resp_tx) => {
+                    let intents = self.engine.drain_pending_loot_intents();
+                    let _ = resp_tx.send(intents);
+                }
+                ControlMessage::SetTestTickDelay(delay) => {
+                    self.test_tick_delay = delay;
+                }
                 ControlMessage::InspectStatus(resp_tx) => {
                     let status = RegionWorkerStatus {
                         region_id: self.region_id,
@@ -340,6 +389,15 @@ impl RegionWorker {
     /// Drains up to channel capacity of ingress commands and submits to engine.
     fn drain_ingress_commands(&mut self) {
         while let Ok(cmd) = self.command_rx.try_recv() {
+            if cmd.ownership_epoch != self.epoch {
+                tracing::warn!(
+                    region_id = %self.region_id.0,
+                    cmd_epoch = cmd.ownership_epoch,
+                    worker_epoch = self.epoch,
+                    "discarding command with stale ownership epoch"
+                );
+                continue;
+            }
             let _ = self.engine.submit_envelope(cmd);
         }
     }
@@ -347,12 +405,26 @@ impl RegionWorker {
     /// Clean shutdown drain: drains remaining commands, updates state to Stopped.
     fn drain_shutdown(&mut self) {
         self.is_shutdown.store(true, Ordering::Relaxed);
-        *self.status.write().unwrap() = RegionStatus::Stopped;
 
         // Drain any remaining persistence acks
         self.process_persistence_acks();
 
         // Drain remaining commands (discarding or rejecting gracefully)
         while self.command_rx.try_recv().is_ok() {}
+
+        // Drain pending intents without loss into shared outbox and optional drain_tx
+        let pending = self.engine.drain_pending_loot_intents();
+        if !pending.is_empty() {
+            self.drained_intents
+                .write()
+                .unwrap()
+                .extend(pending.clone());
+        }
+        if let Some(tx) = self.drain_tx.take() {
+            let _ = tx.send(pending);
+        }
+
+        // Set Stopped status ONLY after all intents and acks are safely drained
+        *self.status.write().unwrap() = RegionStatus::Stopped;
     }
 }

@@ -13,7 +13,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::command::CommandEnvelope;
-use crate::engine::TickOutput;
+use crate::engine::{DurableLootIntent, TickOutput};
 use crate::worker::{
     ControlMessage, PersistenceAck, RegionHandle, RegionHealth, RegionStatus, RegionWorker,
     RegionWorkerStatus,
@@ -57,6 +57,7 @@ pub struct RegionCoordinator {
     regions: Arc<RwLock<HashMap<RegionId, RegionHandle>>>,
     threads: Arc<RwLock<HashMap<RegionId, JoinHandle<()>>>>,
     epoch_validator: Option<EpochValidator>,
+    drained_intents: Arc<RwLock<HashMap<RegionId, Vec<DurableLootIntent>>>>,
 }
 
 impl RegionCoordinator {
@@ -109,6 +110,18 @@ impl RegionCoordinator {
         Ok(())
     }
 
+    /// Registers an externally spawned region worker along with its join handle.
+    pub fn register_region_with_thread(
+        &self,
+        handle: RegionHandle,
+        thread: JoinHandle<()>,
+    ) -> Result<(), CoordinatorError> {
+        let region_id = handle.region_id;
+        self.register_region(handle)?;
+        self.threads.write().unwrap().insert(region_id, thread);
+        Ok(())
+    }
+
     /// Retrieves the handle for an active region.
     #[must_use]
     pub fn get_region(&self, region_id: RegionId) -> Option<RegionHandle> {
@@ -140,11 +153,19 @@ impl RegionCoordinator {
             return Err(RouteError::RegionStopped(region_id));
         }
 
-        // 2. Validate Epoch hook
+        // 2. Validate Command Epoch matches Region Worker Epoch
+        if envelope.ownership_epoch != handle.epoch {
+            return Err(RouteError::EpochMismatch {
+                region_id,
+                expected: handle.epoch,
+            });
+        }
+
+        // 3. Validate External Epoch Validator hook with command's ownership epoch
         if self
             .epoch_validator
             .as_ref()
-            .is_some_and(|validator| !validator(region_id, handle.epoch))
+            .is_some_and(|validator| !validator(region_id, envelope.ownership_epoch))
         {
             return Err(RouteError::EpochMismatch {
                 region_id,
@@ -152,7 +173,7 @@ impl RegionCoordinator {
             });
         }
 
-        // 3. Non-blocking backpressure send
+        // 4. Non-blocking backpressure send
         match handle.cmd_tx.try_send(envelope) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(RouteError::ServerBusy { region_id }),
@@ -200,36 +221,66 @@ impl RegionCoordinator {
             .map_err(|e| CoordinatorError::WorkerCommunication(e.to_string()))
     }
 
-    /// Stops a region worker and waits for shutdown drain.
-    pub fn stop_region(&self, region_id: RegionId) -> Result<(), CoordinatorError> {
+    /// Stops a region worker, ensuring all unacknowledged durable loot intents are drained without loss.
+    pub fn stop_region(
+        &self,
+        region_id: RegionId,
+    ) -> Result<Vec<DurableLootIntent>, CoordinatorError> {
         let handle = self
             .get_region(region_id)
             .ok_or(CoordinatorError::UnknownRegion(region_id))?;
 
-        let _ = handle.control_tx.try_send(ControlMessage::Shutdown);
+        // 1. Signal shutdown flag so worker exits loop even if control channel is saturated
+        handle
+            .is_shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // 2. Deliver Shutdown message, retrying briefly if buffer is currently full
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(500) {
+            match handle.control_tx.try_send(ControlMessage::Shutdown) {
+                Ok(()) => break,
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        }
 
         if let Some(join_handle) = self.threads.write().unwrap().remove(&region_id) {
             let _ = join_handle.join();
+        } else {
+            let start = std::time::Instant::now();
+            while !handle.is_stopped() && start.elapsed() < std::time::Duration::from_secs(2) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         }
 
-        Ok(())
+        let drained = handle.drained_intents();
+        self.drained_intents
+            .write()
+            .unwrap()
+            .entry(region_id)
+            .or_default()
+            .extend(drained.clone());
+
+        Ok(drained)
     }
 
-    /// Stops all registered regions and waits for clean thread termination.
-    pub fn stop_all(&self) {
-        let handles: Vec<(RegionId, RegionHandle)> = {
+    /// Stops all registered regions and collects all unacknowledged durable loot intents across regions.
+    pub fn stop_all(&self) -> HashMap<RegionId, Vec<DurableLootIntent>> {
+        let region_ids: Vec<RegionId> = {
             let regions = self.regions.read().unwrap();
-            regions.iter().map(|(id, h)| (*id, h.clone())).collect()
+            regions.keys().copied().collect()
         };
 
-        for (_, handle) in &handles {
-            let _ = handle.control_tx.try_send(ControlMessage::Shutdown);
+        let mut results = HashMap::new();
+        for id in region_ids {
+            if let Ok(drained) = self.stop_region(id) {
+                results.insert(id, drained);
+            }
         }
-
-        let mut threads = self.threads.write().unwrap();
-        for (_, thread) in threads.drain() {
-            let _ = thread.join();
-        }
+        results
     }
 
     /// Inspects the current status of a region asynchronously.
@@ -259,5 +310,74 @@ impl RegionCoordinator {
     /// Inspects the status of a region synchronously.
     pub fn get_status(&self, region_id: RegionId) -> Option<RegionStatus> {
         self.get_region(region_id).map(|h| h.status())
+    }
+
+    /// Stops a region worker, gracefully draining all pending durable loot intents before termination.
+    pub async fn stop_region_drain(
+        &self,
+        region_id: RegionId,
+    ) -> Result<Vec<DurableLootIntent>, CoordinatorError> {
+        let handle = self
+            .get_region(region_id)
+            .ok_or(CoordinatorError::UnknownRegion(region_id))?;
+
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle
+            .control_tx
+            .send(ControlMessage::ShutdownDrain(resp_tx))
+            .await
+            .map_err(|e| CoordinatorError::WorkerCommunication(e.to_string()))?;
+
+        let drained_intents = resp_rx
+            .await
+            .map_err(|e| CoordinatorError::WorkerCommunication(e.to_string()))?;
+
+        if let Some(join_handle) = self.threads.write().unwrap().remove(&region_id) {
+            let _ = join_handle.join();
+        }
+
+        self.drained_intents
+            .write()
+            .unwrap()
+            .entry(region_id)
+            .or_default()
+            .extend(drained_intents.clone());
+
+        Ok(drained_intents)
+    }
+
+    /// Drains pending durable loot intents from an active region without shutting it down.
+    pub async fn drain_region_intents(
+        &self,
+        region_id: RegionId,
+    ) -> Result<Vec<DurableLootIntent>, CoordinatorError> {
+        let handle = self
+            .get_region(region_id)
+            .ok_or(CoordinatorError::UnknownRegion(region_id))?;
+
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle
+            .control_tx
+            .try_send(ControlMessage::DrainIntents(resp_tx))
+            .map_err(|e| CoordinatorError::WorkerCommunication(e.to_string()))?;
+
+        resp_rx
+            .await
+            .map_err(|e| CoordinatorError::WorkerCommunication(e.to_string()))
+    }
+
+    /// Returns any unacknowledged durable loot intents saved from stopped regions.
+    pub fn get_saved_drained_intents(&self, region_id: RegionId) -> Vec<DurableLootIntent> {
+        self.drained_intents
+            .read()
+            .unwrap()
+            .get(&region_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Drains all accumulated saved intents across all stopped regions for persistence outbox handoff.
+    pub fn drain_all_saved_intents(&self) -> HashMap<RegionId, Vec<DurableLootIntent>> {
+        std::mem::take(&mut *self.drained_intents.write().unwrap())
     }
 }
