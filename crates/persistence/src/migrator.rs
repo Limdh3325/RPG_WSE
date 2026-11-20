@@ -1,10 +1,10 @@
 use crate::error::PersistenceError;
-use sqlx::PgPool;
+use sqlx::{Acquire, PgPool};
 
 pub const INITIAL_SCHEMA_SQL: &str = include_str!("../../../schemas/0001_initial.sql");
 
 pub async fn apply_migration(pool: &PgPool) -> Result<(), PersistenceError> {
-    // 1. Fast-path: Check if migration record already exists
+    // 1. Fast-path: Check if initial migration is already recorded
     let check: Result<Option<(String,)>, sqlx::Error> =
         sqlx::query_as("SELECT version FROM _schema_migrations WHERE version = $1")
             .bind("0001_initial")
@@ -15,23 +15,15 @@ pub async fn apply_migration(pool: &PgPool) -> Result<(), PersistenceError> {
         return Ok(());
     }
 
-    // 2. Slow-path: Serialize across all processes using session-level advisory lock
-    sqlx::query("SELECT pg_advisory_lock(7142981)")
-        .execute(pool)
+    // 2. Slow-path: Acquire a dedicated connection and use transaction-scoped advisory lock.
+    // Transaction-scoped lock (pg_advisory_xact_lock) is automatically released on commit/rollback,
+    // guaranteeing no lock leakage across pooled connections.
+    let mut conn = pool.acquire().await?;
+    let mut tx = conn.begin().await?;
+
+    sqlx::query("SELECT pg_advisory_xact_lock(7142981)")
+        .execute(&mut *tx)
         .await?;
-
-    let res = apply_migration_locked(pool).await;
-
-    // Always release the advisory lock
-    let _ = sqlx::query("SELECT pg_advisory_unlock(7142981)")
-        .execute(pool)
-        .await;
-
-    res
-}
-
-async fn apply_migration_locked(pool: &PgPool) -> Result<(), PersistenceError> {
-    let mut tx = pool.begin().await?;
 
     sqlx::query(
         r#"
