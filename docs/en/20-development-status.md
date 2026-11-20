@@ -10,7 +10,7 @@ Baseline: the new nmain engine. Test results from the previous game are not evid
 | 001 Environment | F-001 foundation, N-007 foundation | fmt/clippy/test/build, actual HTTP/CLI smoke, CI definition | DONE (M0 local gate) |
 | 002 ECS | F-002 | Stable ID creation/deletion/restore, 10,000-Entity lifecycle, duplicate rejection | DONE (local gate passed) |
 | 003 Tick | F-001/003, N-001 | 10,000-Tick state/event hashes | DONE (local gate passed) |
-| 004 Contracts | F-004/009, N-008 | Duplicates/order/version/rule cycles | NOT STARTED |
+| 004 Contracts | F-004/009, N-008 | Duplicates/order/version/rule cycles | DONE (Local gate passed) |
 | 005 Movement/combat | F-007/008/015 | Collision/paths/range/death | NOT STARTED |
 | 006 Worker | F-005/017, N-005 | Single writer, bounded queues, shutdown | NOT STARTED |
 | 007 Durable transactions | F-004/005/010, N-004/009 | Real PG, Commit/ACK failpoints | NOT STARTED |

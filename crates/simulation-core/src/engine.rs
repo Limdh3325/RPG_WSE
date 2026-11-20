@@ -139,8 +139,16 @@ impl SimulationEngine {
     }
 
     /// Submits an ingress command to be scheduled and executed at its `assigned_tick`.
-    pub fn submit_command(&mut self, cmd: IngressCommand) {
-        self.command_queue.enqueue(cmd);
+    ///
+    /// Contracts (schema version, payload hash integrity, transient deduplication,
+    /// and idempotency conflict checking) are strictly enforced by converting the command
+    /// into a canonical CommandEnvelope for this region before enqueueing.
+    pub fn submit_command(
+        &mut self,
+        cmd: IngressCommand,
+    ) -> Result<DeduplicationOutcome, DomainError> {
+        let envelope = CommandEnvelope::from_ingress(&cmd, self.world.meta.region_id);
+        self.submit_envelope(envelope)
     }
 
     /// Returns the current deduplication and execution status of a command.

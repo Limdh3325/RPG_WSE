@@ -190,14 +190,20 @@ fn test_tick_003_shuffled_ingress_commands_deterministic_ordering() {
     );
 
     // Engine 1 receives in order A -> B -> C
-    engine1.submit_command(cmd_a.clone());
-    engine1.submit_command(cmd_b.clone());
-    engine1.submit_command(cmd_c.clone());
+    engine1
+        .submit_command(cmd_a.clone())
+        .expect("valid command A");
+    engine1
+        .submit_command(cmd_b.clone())
+        .expect("valid command B");
+    engine1
+        .submit_command(cmd_c.clone())
+        .expect("valid command C");
 
     // Engine 2 receives in reverse/shuffled order C -> A -> B
-    engine2.submit_command(cmd_c);
-    engine2.submit_command(cmd_a);
-    engine2.submit_command(cmd_b);
+    engine2.submit_command(cmd_c).expect("valid command C");
+    engine2.submit_command(cmd_a).expect("valid command A");
+    engine2.submit_command(cmd_b).expect("valid command B");
 
     let out1 = engine1.step().expect("step 1");
     let out2 = engine2.step().expect("step 2");
