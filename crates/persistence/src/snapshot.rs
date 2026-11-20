@@ -166,6 +166,7 @@ impl SnapshotManager {
         .fetch_all(pool)
         .await?;
 
+        let mut had_incompatible_snapshot = false;
         for row in rows {
             // 0. Verify region identity
             if row.region_id != region_id {
@@ -198,6 +199,7 @@ impl SnapshotManager {
                 || row.rules_version != CURRENT_RULES_VERSION as i32
                 || row.engine_version != CURRENT_ENGINE_VERSION
             {
+                had_incompatible_snapshot = true;
                 warn!(
                     snapshot_id = %row.id,
                     tick = row.tick,
@@ -224,6 +226,7 @@ impl SnapshotManager {
                         || dto.rules_version != CURRENT_RULES_VERSION
                         || dto.engine_version != CURRENT_ENGINE_VERSION
                     {
+                        had_incompatible_snapshot = true;
                         warn!(
                             snapshot_id = %row.id,
                             tick = row.tick,
@@ -243,6 +246,12 @@ impl SnapshotManager {
                     continue;
                 }
             }
+        }
+
+        if had_incompatible_snapshot {
+            return Err(PersistenceError::IncompatibleVersion {
+                reason: "Found snapshot(s) with incompatible schema/engine/rules version, but no earlier compatible snapshot exists".into(),
+            });
         }
 
         Ok(None)

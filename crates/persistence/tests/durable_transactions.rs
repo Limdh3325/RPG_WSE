@@ -27,24 +27,21 @@ fn get_test_database_url() -> String {
 }
 
 async fn setup_test_pool() -> Option<PgPool> {
+    let has_explicit_db = env::var("DATABASE_URL").is_ok();
     let url = get_test_database_url();
     let pool = match PgPool::connect(&url).await {
         Ok(p) => p,
-        Err(_) => {
-            let fallback = "[REDACTED:connection_string]127.0.0.1:5433/wse_dev";
-            match PgPool::connect(fallback).await {
-                Ok(p) => p,
-                Err(err) => {
-                    eprintln!("Skipping PostgreSQL integration tests (cannot connect: {err})");
-                    return None;
-                }
+        Err(err) => {
+            if has_explicit_db {
+                panic!("Failed to connect to specified DATABASE_URL ({url}): {err}");
             }
+            eprintln!("Skipping PostgreSQL integration tests (cannot connect: {err})");
+            return None;
         }
     };
 
     if let Err(err) = apply_migration(&pool).await {
-        eprintln!("Failed to apply initial schema migration: {err}");
-        return None;
+        panic!("Failed to apply initial schema migration: {err}");
     }
 
     Some(pool)
@@ -1051,4 +1048,84 @@ async fn test_per_015_inventory_deduction_and_inbox_tx() {
     assert!(is_new2);
     tx2.commit().await.unwrap();
     assert!(dedup.is_duplicate(test_ev).await.unwrap());
+}
+
+#[tokio::test]
+async fn test_per_017_durable_writer_event_recovery_roundtrip() {
+    let Some(pool) = setup_test_pool().await else {
+        return;
+    };
+    let fixture = create_test_fixture(&pool, 1000, 50).await;
+    let writer = DurableWriter::new(pool.clone());
+
+    // 1. Commit MarketPurchase with ItemPurchased and GoldDeducted events
+    let cmd_id = Uuid::new_v4();
+    let ev1 = Uuid::new_v4();
+    let ev2 = Uuid::new_v4();
+    let intent = DurableIntent {
+        command_id: cmd_id,
+        world_id: fixture.world_id,
+        region_id: fixture.region_id,
+        ownership_epoch: fixture.epoch,
+        actor_id: Some(fixture.actor_id),
+        payload_hash: [99u8; 32],
+        tick: 50,
+        operations: vec![DurableOperation::MarketPurchase {
+            settlement_id: fixture.settlement_id,
+            buyer_wallet_id: fixture.buyer_wallet_id,
+            seller_wallet_id: None,
+            sku: "potion_healing".to_string(),
+            quantity: 2,
+            unit_price: 10,
+        }],
+        emitted_events: vec![
+            DurableEvent {
+                event_id: ev1,
+                event_type: "ItemPurchased".into(),
+                schema_version: 1,
+                rules_version: 1,
+                tick: 50,
+                causation_event_id: None,
+                correlation_id: cmd_id,
+                payload: serde_json::json!({
+                    "buyer_id": fixture.actor_id,
+                    "sku": "potion_healing",
+                    "quantity": 2,
+                    "cost": 20
+                }),
+                outbox_topic: Some("market.purchased".into()),
+            },
+            DurableEvent {
+                event_id: ev2,
+                event_type: "GoldDeducted".into(),
+                schema_version: 1,
+                rules_version: 1,
+                tick: 50,
+                causation_event_id: Some(ev1),
+                correlation_id: cmd_id,
+                payload: serde_json::json!({
+                    "wallet_id": fixture.buyer_wallet_id,
+                    "amount": 20
+                }),
+                outbox_topic: None,
+            },
+        ],
+    };
+    let ack = writer.commit_intent(intent).await.expect("commit purchase");
+    assert_eq!(ack.status, ReceiptStatus::Succeeded);
+
+    // 2. Perform region recovery: should replay financial events cleanly without "Unknown domain event type" error
+    let recovered = persistence::RecoveryManager::recover_region(
+        &pool,
+        fixture.region_id,
+        "worker-after-purchase",
+        60,
+    )
+    .await
+    .expect("Region recovery must succeed after durable writer transaction");
+
+    assert_eq!(recovered.region_id, fixture.region_id);
+    assert_eq!(recovered.tick, 50);
+    assert_eq!(recovered.replayed_events_count, 2);
+    assert_eq!(recovered.committed_event_seq, 2);
 }

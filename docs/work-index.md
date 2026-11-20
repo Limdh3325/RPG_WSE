@@ -10,3 +10,4 @@
 | WORK-20261116-01 | TASK-004 Command & Event Contracts | [요청](../inbox/WORK-20261116-01.md) | [결과](../outbox/WORK-20261116-01.md) | DONE | 미통합 (feature 브랜치) | 현재 발견 없음 |
 | WORK-20261116-02 | TASK-005 Movement + Combat Minimal Systems | [요청](../inbox/WORK-20261116-02.md) | [결과](../outbox/WORK-20261116-02.md) | DONE | 미통합 (feature 브랜치) | 현재 발견 없음 |
 | WORK-20261116-03 | TASK-006 Tokio Region Worker / Coordinator | [요청](../inbox/WORK-20261116-03.md) | [결과](../outbox/WORK-20261116-03.md) | DONE | 미통합 (feature 브랜치) | 현재 발견 없음 |
+| WORK-20261120-01 | TASK-007/008 8차 적대적 코드 리뷰 및 P1 3건 해결 | [요청](../inbox/WORK-20261120-01.md) | [결과](../outbox/WORK-20261120-01.md) | DONE | 조치 완료 (9차 검증 진행) | 현재 발견 없음 |

@@ -28,24 +28,21 @@ fn get_test_database_url() -> String {
 }
 
 async fn setup_db_pool() -> Option<PgPool> {
+    let has_explicit_db = env::var("DATABASE_URL").is_ok();
     let database_url = get_test_database_url();
     let pool = match PgPool::connect(&database_url).await {
         Ok(p) => p,
-        Err(_) => {
-            let fallback = "[REDACTED:connection_string]127.0.0.1:5433/wse_dev";
-            match PgPool::connect(fallback).await {
-                Ok(p) => p,
-                Err(err) => {
-                    eprintln!("Skipping PostgreSQL integration test (cannot connect: {err})");
-                    return None;
-                }
+        Err(err) => {
+            if has_explicit_db {
+                panic!("Failed to connect to specified DATABASE_URL ({database_url}): {err}");
             }
+            eprintln!("Skipping PostgreSQL integration test (cannot connect: {err})");
+            return None;
         }
     };
 
     if let Err(err) = apply_migration(&pool).await {
-        eprintln!("Failed to apply initial schema migration: {err}");
-        return None;
+        panic!("Failed to apply initial schema migration: {err}");
     }
 
     Some(pool)
@@ -584,5 +581,68 @@ async fn test_per_016_missing_event_tail_fails_recovery() {
     assert!(
         matches!(result, Err(persistence::PersistenceError::RecoveryFailed(ref msg)) if msg.contains("Event tail missing")),
         "Recovery must fail when events up to durable_event_seq are missing"
+    );
+}
+
+#[tokio::test]
+async fn test_per_018_only_incompatible_snapshot_rejects_recovery_without_fallback() {
+    let pool = match setup_db_pool().await {
+        Some(p) => p,
+        None => return,
+    };
+    let (_world_id, region_id) = create_test_world_and_region(&pool).await;
+
+    // Insert only an incompatible snapshot (rules_version = 999) with valid SHA-256 hash
+    let snap_id = Uuid::new_v4();
+    let dto = SnapshotDto {
+        region_id,
+        tick: 250,
+        committed_event_seq: 0,
+        ownership_epoch: 1,
+        schema_version: CURRENT_SCHEMA_VERSION,
+        engine_version: CURRENT_ENGINE_VERSION.to_string(),
+        rules_version: 999, // Incompatible
+        rng_seed: 42,
+        rng_step: 42,
+        state: RegionStateDto {
+            region_id: RegionId(region_id),
+            epoch: 1,
+            tick: 250,
+            status: RegionStatus::Active,
+            entities: vec![],
+        },
+        scheduled_actions: vec![],
+    };
+    let payload = serde_json::to_vec(&dto).unwrap();
+    let mut hasher = Sha256::new();
+    hasher.update(&payload);
+    let sha256_hash = hasher.finalize().to_vec();
+
+    sqlx::query(
+        r#"
+        INSERT INTO region_snapshots (
+            id, region_id, tick, committed_event_seq, ownership_epoch,
+            schema_version, engine_version, rules_version, sha256, payload
+        ) VALUES ($1, $2, 250, 0, 1, 1, $3, 999, $4, $5)
+        "#,
+    )
+    .bind(snap_id)
+    .bind(region_id)
+    .bind(CURRENT_ENGINE_VERSION)
+    .bind(&sha256_hash)
+    .bind(&payload)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // With no valid earlier snapshot, recovery must fail with IncompatibleVersion instead of silently resetting to genesis (tick 0)
+    let res =
+        RecoveryManager::recover_region(&pool, region_id, "worker-incompatible-check", 60).await;
+    assert!(
+        matches!(
+            res,
+            Err(persistence::PersistenceError::IncompatibleVersion { .. })
+        ),
+        "Recovery must fail with IncompatibleVersion when only incompatible snapshot exists"
     );
 }

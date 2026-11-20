@@ -249,6 +249,16 @@ impl RecoveryManager {
                         })?;
                     scheduled_actions.retain(|a| a.id != action_id);
                 }
+                // Financial / asset / market transaction events: already materialized
+                // into Postgres tables (wallets, inventory_slots, settlement_market_stocks).
+                // They advance sequence/tick during replay without modifying in-memory ECS state.
+                "ItemPurchased"
+                | "GoldDeducted"
+                | "GoldAdded"
+                | "StockDeducted"
+                | "StockAdded"
+                | "WalletTransferred"
+                | "InventoryTransferred" => {}
                 unknown => {
                     return Err(PersistenceError::RecoveryFailed(format!(
                         "Unknown domain event type '{unknown}' during replay"
