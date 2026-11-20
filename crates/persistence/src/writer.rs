@@ -368,10 +368,11 @@ impl DurableWriter {
                     })?;
 
                     if new_gold < 0 {
+                        let required = delta.checked_neg().unwrap_or(i64::MAX);
                         return Err(PersistenceError::InsufficientFunds {
                             wallet_id: *wallet_id,
                             balance: gold,
-                            required: -delta,
+                            required,
                         });
                     }
 
@@ -536,11 +537,12 @@ impl DurableWriter {
                     })?;
 
                     if new_qty < 0 {
+                        let required = quantity_delta.checked_neg().unwrap_or(i64::MAX);
                         return Err(PersistenceError::InsufficientStock {
                             settlement_id: Uuid::nil(),
                             sku: sku.clone(),
                             available: current_qty,
-                            required: -quantity_delta,
+                            required,
                         });
                     }
 

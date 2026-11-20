@@ -52,38 +52,10 @@ pub struct SnapshotRow {
 pub struct SnapshotManager;
 
 impl SnapshotManager {
-    /// Serializes SnapshotDto, calculates its SHA-256 hash, and inserts a row into `region_snapshots`.
+    /// Saves a snapshot with lease fencing and version validation.
+    /// Delegates to `save_snapshot_fenced` using `dto.ownership_epoch`.
     pub async fn save_snapshot(pool: &PgPool, dto: &SnapshotDto) -> Result<Uuid, PersistenceError> {
-        let snapshot_id = Uuid::new_v4();
-        let payload =
-            serde_json::to_vec(dto).map_err(|e| PersistenceError::Serialization(e.to_string()))?;
-
-        let mut hasher = Sha256::new();
-        hasher.update(&payload);
-        let sha256_hash = hasher.finalize().to_vec();
-
-        sqlx::query(
-            r#"
-            INSERT INTO region_snapshots (
-                id, region_id, tick, committed_event_seq, ownership_epoch,
-                schema_version, engine_version, rules_version, sha256, payload
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            "#,
-        )
-        .bind(snapshot_id)
-        .bind(dto.region_id)
-        .bind(dto.tick as i64)
-        .bind(dto.committed_event_seq as i64)
-        .bind(dto.ownership_epoch)
-        .bind(dto.schema_version as i32)
-        .bind(&dto.engine_version)
-        .bind(dto.rules_version as i32)
-        .bind(&sha256_hash)
-        .bind(&payload)
-        .execute(pool)
-        .await?;
-
-        Ok(snapshot_id)
+        Self::save_snapshot_fenced(pool, dto, dto.ownership_epoch).await
     }
 
     /// Fenced snapshot persistence: verifies ownership epoch against lease and establishes watermark consistency.
@@ -92,12 +64,39 @@ impl SnapshotManager {
         dto: &SnapshotDto,
         expected_epoch: i64,
     ) -> Result<Uuid, PersistenceError> {
+        // 0. Verify version compatibility
+        if dto.schema_version != CURRENT_SCHEMA_VERSION
+            || dto.engine_version != CURRENT_ENGINE_VERSION
+            || dto.rules_version != CURRENT_RULES_VERSION
+        {
+            return Err(PersistenceError::IncompatibleVersion {
+                reason: format!(
+                    "Snapshot versions (schema: {}, engine: {}, rules: {}) do not match current engine versions (schema: {}, engine: {}, rules: {})",
+                    dto.schema_version,
+                    dto.engine_version,
+                    dto.rules_version,
+                    CURRENT_SCHEMA_VERSION,
+                    CURRENT_ENGINE_VERSION,
+                    CURRENT_RULES_VERSION
+                ),
+            });
+        }
+
+        // 1. Verify that DTO epoch matches expected fencing epoch
+        if dto.ownership_epoch != expected_epoch {
+            return Err(PersistenceError::LeaseFencingFailed {
+                region_id: dto.region_id,
+                expected_epoch,
+                actual_epoch: Some(dto.ownership_epoch),
+            });
+        }
+
         let mut tx = pool.begin().await?;
 
-        // 1. Verify lease fencing
+        // 2. Verify lease fencing against database
         verify_lease_fencing_tx(&mut tx, dto.region_id, expected_epoch).await?;
 
-        // 2. Invariant: Watermark must not exceed actual database sequence
+        // 3. Invariant: Watermark must not exceed actual database sequence
         let db_seq: i64 = {
             let row = sqlx::query("SELECT durable_event_seq FROM regions WHERE id = $1 FOR UPDATE")
                 .bind(dto.region_id)
@@ -113,7 +112,7 @@ impl SnapshotManager {
             )));
         }
 
-        // 3. Serialize and save
+        // 4. Serialize and save
         let snapshot_id = Uuid::new_v4();
         let payload =
             serde_json::to_vec(dto).map_err(|e| PersistenceError::Serialization(e.to_string()))?;

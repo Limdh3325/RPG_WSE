@@ -854,3 +854,69 @@ async fn test_per_012_concurrent_apply_migration_no_leak_and_exact_one_record() 
         "All transaction-scoped advisory locks must be released"
     );
 }
+
+#[tokio::test]
+async fn test_per_013_i64_min_transfer_safely_rejected_without_panic() {
+    let Some(pool) = setup_test_pool().await else {
+        return;
+    };
+    let fixture = create_test_fixture(&pool, 100, 10).await;
+    let writer = DurableWriter::new(pool.clone());
+
+    // 1. Wallet transfer with i64::MIN must not panic with arithmetic negation overflow
+    let intent_wallet_min = DurableIntent {
+        command_id: Uuid::new_v4(),
+        world_id: fixture.world_id,
+        region_id: fixture.region_id,
+        ownership_epoch: fixture.epoch,
+        actor_id: Some(fixture.actor_id),
+        payload_hash: [91u8; 32],
+        tick: 40,
+        operations: vec![DurableOperation::WalletTransfer {
+            wallet_id: fixture.buyer_wallet_id,
+            delta: i64::MIN,
+        }],
+        emitted_events: vec![],
+    };
+    let res_wallet = writer.commit_intent(intent_wallet_min).await;
+    assert!(
+        matches!(
+            res_wallet,
+            Err(PersistenceError::InsufficientFunds { .. })
+                | Err(PersistenceError::InvalidOperation(_))
+        ),
+        "Wallet transfer of i64::MIN must return error, not panic"
+    );
+
+    // 2. Inventory transfer with i64::MIN must not panic
+    let intent_inv_min = DurableIntent {
+        command_id: Uuid::new_v4(),
+        world_id: fixture.world_id,
+        region_id: fixture.region_id,
+        ownership_epoch: fixture.epoch,
+        actor_id: Some(fixture.actor_id),
+        payload_hash: [92u8; 32],
+        tick: 41,
+        operations: vec![DurableOperation::InventoryTransfer {
+            owner_entity_id: fixture.actor_id,
+            sku: "potion_healing".into(),
+            quantity_delta: i64::MIN,
+        }],
+        emitted_events: vec![],
+    };
+    let res_inv = writer.commit_intent(intent_inv_min).await;
+    assert!(
+        matches!(
+            res_inv,
+            Err(PersistenceError::InsufficientStock { .. })
+                | Err(PersistenceError::InvalidOperation(_))
+        ),
+        "Inventory transfer of i64::MIN must return error, not panic"
+    );
+
+    // Verify balances untouched
+    assert_eq!(
+        get_wallet_balance(&pool, fixture.buyer_wallet_id).await,
+        100
+    );
+}

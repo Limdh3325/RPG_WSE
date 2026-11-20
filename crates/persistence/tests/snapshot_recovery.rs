@@ -85,12 +85,16 @@ async fn test_per_004_corrupted_snapshot_falls_back_to_last_valid() {
     };
     let (_world_id, region_id) = create_test_world_and_region(&pool).await;
 
+    let epoch = persistence::acquire_or_renew_lease(&pool, region_id, "test-worker", 60)
+        .await
+        .expect("acquire lease");
+
     // 1. Save valid Snapshot A at tick 100
     let dto_a = SnapshotDto {
         region_id,
         tick: 100,
-        committed_event_seq: 10,
-        ownership_epoch: 1,
+        committed_event_seq: 0,
+        ownership_epoch: epoch,
         schema_version: CURRENT_SCHEMA_VERSION,
         engine_version: CURRENT_ENGINE_VERSION.to_string(),
         rules_version: CURRENT_RULES_VERSION,
@@ -98,7 +102,7 @@ async fn test_per_004_corrupted_snapshot_falls_back_to_last_valid() {
         rng_step: 42,
         state: RegionStateDto {
             region_id: RegionId(region_id),
-            epoch: 1,
+            epoch: epoch as u64,
             tick: 100,
             status: RegionStatus::Active,
             entities: vec![],
@@ -207,12 +211,22 @@ async fn test_per_005_recovery_replays_events_and_is_crash_idempotent() {
     };
     let (world_id, region_id) = create_test_world_and_region(&pool).await;
 
+    let epoch = persistence::acquire_or_renew_lease(&pool, region_id, "test-worker", 60)
+        .await
+        .expect("acquire lease");
+
+    sqlx::query("UPDATE regions SET durable_event_seq = 5 WHERE id = $1")
+        .bind(region_id)
+        .execute(&pool)
+        .await
+        .expect("update durable_event_seq");
+
     // 1. Save base snapshot at tick 50, committed_event_seq 5
     let dto = SnapshotDto {
         region_id,
         tick: 50,
         committed_event_seq: 5,
-        ownership_epoch: 1,
+        ownership_epoch: epoch,
         schema_version: CURRENT_SCHEMA_VERSION,
         engine_version: CURRENT_ENGINE_VERSION.to_string(),
         rules_version: CURRENT_RULES_VERSION,
@@ -220,7 +234,7 @@ async fn test_per_005_recovery_replays_events_and_is_crash_idempotent() {
         rng_step: 10,
         state: RegionStateDto {
             region_id: RegionId(region_id),
-            epoch: 1,
+            epoch: epoch as u64,
             tick: 50,
             status: RegionStatus::Active,
             entities: vec![],
@@ -356,7 +370,7 @@ async fn test_per_005_recovery_replays_events_and_is_crash_idempotent() {
     assert_eq!(recovered1.tick, 54);
     assert_eq!(recovered1.committed_event_seq, 9);
     assert_eq!(recovered1.replayed_events_count, 4);
-    assert_eq!(recovered1.epoch, 1);
+    assert_eq!(recovered1.epoch, epoch + 1);
     assert_eq!(recovered1.rng_step, 11); // advanced by ENTITY_TICK
 
     // Verify state mutations applied by event reducer
@@ -375,7 +389,7 @@ async fn test_per_005_recovery_replays_events_and_is_crash_idempotent() {
     assert_eq!(recovered2.tick, 54);
     assert_eq!(recovered2.committed_event_seq, 9);
     assert_eq!(recovered2.replayed_events_count, 4);
-    assert_eq!(recovered2.epoch, 2); // Second recovery advances epoch to 2
+    assert_eq!(recovered2.epoch, epoch + 2); // Second recovery advances epoch further
     assert_eq!(recovered2.state.entities.len(), 1);
     assert_eq!(recovered2.state.entities[0].position, moved_pos);
     assert_eq!(recovered2.scheduled_actions.len(), 1);
@@ -472,4 +486,74 @@ async fn test_per_011_fenced_checkpoint_and_invariants_verification() {
     assert_eq!(recovered.tick, 100);
     assert_eq!(recovered.state.status, RegionStatus::Active);
     assert_eq!(recovered.state.epoch, (epoch + 1) as u64);
+}
+
+#[tokio::test]
+async fn test_per_014_snapshot_version_and_fencing_guards() {
+    let pool = match setup_db_pool().await {
+        Some(p) => p,
+        None => return,
+    };
+    let (_world_id, region_id) = create_test_world_and_region(&pool).await;
+    let epoch = persistence::acquire_or_renew_lease(&pool, region_id, "worker-guard", 60)
+        .await
+        .expect("acquire lease");
+
+    let dto = SnapshotDto {
+        region_id,
+        tick: 1,
+        committed_event_seq: 0,
+        ownership_epoch: epoch,
+        schema_version: CURRENT_SCHEMA_VERSION,
+        engine_version: CURRENT_ENGINE_VERSION.to_string(),
+        rules_version: CURRENT_RULES_VERSION,
+        rng_seed: 42,
+        rng_step: 0,
+        state: RegionStateDto {
+            region_id: RegionId(region_id),
+            epoch: epoch as u64,
+            tick: 1,
+            status: RegionStatus::Active,
+            entities: vec![],
+        },
+        scheduled_actions: vec![],
+    };
+
+    // 1. Version incompatibility rejected
+    let mut incompatible_dto = dto.clone();
+    incompatible_dto.rules_version = CURRENT_RULES_VERSION + 1;
+    let err_incomp = SnapshotManager::save_snapshot_fenced(&pool, &incompatible_dto, epoch).await;
+    assert!(
+        matches!(
+            err_incomp,
+            Err(persistence::PersistenceError::IncompatibleVersion { .. })
+        ),
+        "Incompatible rules version must be rejected"
+    );
+
+    // 2. Unfenced delegate check & stale payload epoch check
+    let new_epoch = persistence::acquire_or_renew_lease(&pool, region_id, "worker-guard-2", 60)
+        .await
+        .expect("acquire new lease");
+    assert!(new_epoch > epoch);
+
+    // Attempt save with old epoch DTO via public save_snapshot (delegates to fencing with dto.ownership_epoch)
+    let stale_public = SnapshotManager::save_snapshot(&pool, &dto).await;
+    assert!(
+        matches!(
+            stale_public,
+            Err(persistence::PersistenceError::LeaseFencingFailed { .. })
+        ),
+        "Public save_snapshot with stale epoch must be rejected by lease fencing"
+    );
+
+    // Attempt save with mismatched expected_epoch vs dto.ownership_epoch
+    let stale_payload = SnapshotManager::save_snapshot_fenced(&pool, &dto, new_epoch).await;
+    assert!(
+        matches!(
+            stale_payload,
+            Err(persistence::PersistenceError::LeaseFencingFailed { .. })
+        ),
+        "Fenced save with payload epoch differing from current fencing token must be rejected"
+    );
 }
