@@ -342,6 +342,12 @@ async fn test_per_005_recovery_replays_events_and_is_crash_idempotent() {
     .await
     .expect("insert ev9");
 
+    sqlx::query("UPDATE regions SET durable_event_seq = 9 WHERE id = $1")
+        .bind(region_id)
+        .execute(&pool)
+        .await
+        .expect("update region durable_event_seq");
+
     // 3. First recovery attempt
     let recovered1 = RecoveryManager::recover_region(&pool, region_id, "worker-node-1", 60)
         .await
@@ -392,4 +398,78 @@ async fn test_recovery_on_fresh_region_without_snapshots() {
     assert_eq!(recovered.replayed_events_count, 0);
     assert_eq!(recovered.epoch, 1);
     assert_eq!(recovered.state.status, RegionStatus::Active);
+}
+
+#[tokio::test]
+async fn test_per_011_fenced_checkpoint_and_invariants_verification() {
+    let pool = match setup_db_pool().await {
+        Some(p) => p,
+        None => return,
+    };
+    let (_world_id, region_id) = create_test_world_and_region(&pool).await;
+
+    // 1. Acquire lease to get valid epoch
+    let epoch = persistence::acquire_or_renew_lease(&pool, region_id, "checkpoint-worker", 60)
+        .await
+        .expect("acquire lease");
+
+    let dto = SnapshotDto {
+        region_id,
+        tick: 100,
+        committed_event_seq: 0,
+        ownership_epoch: epoch,
+        schema_version: CURRENT_SCHEMA_VERSION,
+        engine_version: CURRENT_ENGINE_VERSION.to_string(),
+        rules_version: CURRENT_RULES_VERSION,
+        rng_seed: 555,
+        rng_step: 0,
+        state: RegionStateDto {
+            region_id: RegionId(region_id),
+            epoch: epoch as u64,
+            tick: 100,
+            status: RegionStatus::Active,
+            entities: vec![],
+        },
+        scheduled_actions: vec![],
+    };
+
+    // 2. Fenced checkpoint with matching epoch succeeds
+    let snap_id = SnapshotManager::save_snapshot_fenced(&pool, &dto, epoch)
+        .await
+        .expect("fenced snapshot save must succeed with valid epoch");
+    assert!(!snap_id.is_nil());
+
+    // 3. Fenced checkpoint with stale epoch is rejected
+    let stale_res = SnapshotManager::save_snapshot_fenced(&pool, &dto, epoch - 1).await;
+    assert!(
+        matches!(
+            stale_res,
+            Err(persistence::PersistenceError::LeaseFencingFailed { .. })
+        ),
+        "Checkpoint with stale epoch must be rejected"
+    );
+
+    // 4. Checkpoint watermark exceeding database durable_event_seq is rejected
+    let mut invalid_watermark_dto = dto.clone();
+    invalid_watermark_dto.committed_event_seq = 99999;
+    let watermark_res =
+        SnapshotManager::save_snapshot_fenced(&pool, &invalid_watermark_dto, epoch).await;
+    assert!(
+        matches!(
+            watermark_res,
+            Err(persistence::PersistenceError::InvalidOperation(_))
+        ),
+        "Checkpoint watermark exceeding database sequence must be rejected"
+    );
+
+    // 5. Recovery pipeline restores state and validates invariants
+    let recovered = RecoveryManager::recover_region(&pool, region_id, "recovery-worker", 60)
+        .await
+        .expect("recovery must succeed");
+
+    assert_eq!(recovered.region_id, region_id);
+    assert_eq!(recovered.epoch, epoch + 1); // Incremented for new worker takeover
+    assert_eq!(recovered.tick, 100);
+    assert_eq!(recovered.state.status, RegionStatus::Active);
+    assert_eq!(recovered.state.epoch, (epoch + 1) as u64);
 }

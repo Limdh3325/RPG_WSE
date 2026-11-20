@@ -361,7 +361,13 @@ impl DurableWriter {
                     .fetch_one(&mut **tx)
                     .await?;
 
-                    if gold + delta < 0 {
+                    let new_gold = gold.checked_add(*delta).ok_or_else(|| {
+                        PersistenceError::InvalidOperation(
+                            "Wallet balance arithmetic overflow".into(),
+                        )
+                    })?;
+
+                    if new_gold < 0 {
                         return Err(PersistenceError::InsufficientFunds {
                             wallet_id: *wallet_id,
                             balance: gold,
@@ -389,7 +395,15 @@ impl DurableWriter {
                     quantity,
                     unit_price,
                 } => {
-                    let total_cost = quantity * unit_price;
+                    if *quantity <= 0 || *unit_price <= 0 {
+                        return Err(PersistenceError::InvalidOperation(
+                            "Purchase quantity and unit_price must be strictly positive".into(),
+                        ));
+                    }
+
+                    let total_cost = quantity.checked_mul(*unit_price).ok_or_else(|| {
+                        PersistenceError::InvalidOperation("Purchase total cost overflow".into())
+                    })?;
 
                     // Check buyer balance
                     let (gold,): (i64,) = sqlx::query_as(
@@ -444,6 +458,21 @@ impl DurableWriter {
 
                     // Credit seller if specified
                     if let Some(seller_id) = seller_wallet_id {
+                        let (seller_gold,): (i64,) = sqlx::query_as(
+                            r#"
+                            SELECT gold FROM wallets WHERE entity_id = $1
+                            "#,
+                        )
+                        .bind(seller_id)
+                        .fetch_one(&mut **tx)
+                        .await?;
+
+                        seller_gold.checked_add(total_cost).ok_or_else(|| {
+                            PersistenceError::InvalidOperation(
+                                "Seller wallet arithmetic overflow".into(),
+                            )
+                        })?;
+
                         sqlx::query(
                             r#"
                             UPDATE wallets
@@ -502,7 +531,11 @@ impl DurableWriter {
                     .await?;
 
                     let current_qty = existing.map(|(q,)| q).unwrap_or(0);
-                    if current_qty + quantity_delta < 0 {
+                    let new_qty = current_qty.checked_add(*quantity_delta).ok_or_else(|| {
+                        PersistenceError::InvalidOperation("Inventory quantity overflow".into())
+                    })?;
+
+                    if new_qty < 0 {
                         return Err(PersistenceError::InsufficientStock {
                             settlement_id: Uuid::nil(),
                             sku: sku.clone(),

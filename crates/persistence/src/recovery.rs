@@ -50,6 +50,16 @@ impl RecoveryManager {
         let verified_snapshot =
             SnapshotManager::load_latest_verified_snapshot(pool, region_id).await?;
 
+        // Query authoritative region sequence from DB
+        let db_seq: i64 = {
+            use sqlx::Row;
+            let row = sqlx::query("SELECT durable_event_seq FROM regions WHERE id = $1")
+                .bind(region_id)
+                .fetch_one(pool)
+                .await?;
+            row.get("durable_event_seq")
+        };
+
         let (
             mut tick,
             mut committed_event_seq,
@@ -58,6 +68,16 @@ impl RecoveryManager {
             mut state,
             mut scheduled_actions,
         ) = if let Some((snapshot_id, snapshot)) = verified_snapshot {
+            if snapshot.committed_event_seq as i64 > db_seq {
+                return Err(PersistenceError::CorruptedSnapshot {
+                    snapshot_id,
+                    reason: format!(
+                        "Snapshot watermark {} exceeds DB durable_event_seq {}",
+                        snapshot.committed_event_seq, db_seq
+                    ),
+                });
+            }
+
             info!(
                 snapshot_id = %snapshot_id,
                 region_id = %region_id,
@@ -185,6 +205,23 @@ impl RecoveryManager {
         }
 
         state.tick = tick;
+
+        // Verify restored invariants
+        if state.epoch != new_epoch as u64 {
+            return Err(PersistenceError::RecoveryFailed(
+                "Restored state epoch must match newly acquired lease epoch".into(),
+            ));
+        }
+        if state.region_id.0 != region_id {
+            return Err(PersistenceError::RecoveryFailed(
+                "Restored state region ID mismatch".into(),
+            ));
+        }
+        if state.status != game_domain::RegionStatus::Active {
+            return Err(PersistenceError::RecoveryFailed(
+                "Restored region state must be in ACTIVE status".into(),
+            ));
+        }
 
         Ok(RecoveredRegionState {
             region_id,

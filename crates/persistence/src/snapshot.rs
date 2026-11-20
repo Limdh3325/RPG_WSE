@@ -1,8 +1,9 @@
 use crate::error::PersistenceError;
+use crate::lease::verify_lease_fencing_tx;
 use game_domain::RegionStateDto;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -85,8 +86,69 @@ impl SnapshotManager {
         Ok(snapshot_id)
     }
 
+    /// Fenced snapshot persistence: verifies ownership epoch against lease and establishes watermark consistency.
+    pub async fn save_snapshot_fenced(
+        pool: &PgPool,
+        dto: &SnapshotDto,
+        expected_epoch: i64,
+    ) -> Result<Uuid, PersistenceError> {
+        let mut tx = pool.begin().await?;
+
+        // 1. Verify lease fencing
+        verify_lease_fencing_tx(&mut tx, dto.region_id, expected_epoch).await?;
+
+        // 2. Invariant: Watermark must not exceed actual database sequence
+        let db_seq: i64 = {
+            let row = sqlx::query("SELECT durable_event_seq FROM regions WHERE id = $1 FOR UPDATE")
+                .bind(dto.region_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            row.get("durable_event_seq")
+        };
+
+        if dto.committed_event_seq as i64 > db_seq {
+            return Err(PersistenceError::InvalidOperation(format!(
+                "Snapshot watermark {} exceeds region durable_event_seq {}",
+                dto.committed_event_seq, db_seq
+            )));
+        }
+
+        // 3. Serialize and save
+        let snapshot_id = Uuid::new_v4();
+        let payload =
+            serde_json::to_vec(dto).map_err(|e| PersistenceError::Serialization(e.to_string()))?;
+
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        let sha256_hash = hasher.finalize().to_vec();
+
+        sqlx::query(
+            r#"
+            INSERT INTO region_snapshots (
+                id, region_id, tick, committed_event_seq, ownership_epoch,
+                schema_version, engine_version, rules_version, sha256, payload
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            "#,
+        )
+        .bind(snapshot_id)
+        .bind(dto.region_id)
+        .bind(dto.tick as i64)
+        .bind(dto.committed_event_seq as i64)
+        .bind(dto.ownership_epoch)
+        .bind(dto.schema_version as i32)
+        .bind(&dto.engine_version)
+        .bind(dto.rules_version as i32)
+        .bind(&sha256_hash)
+        .bind(&payload)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(snapshot_id)
+    }
+
     /// Loads the latest snapshot that passes SHA-256 checksum verification, version compatibility,
-    /// and JSON deserialization.
+    /// region identity matching, and JSON deserialization.
     /// If corrupted or incompatible, it logs a warning and falls back to the previous valid snapshot.
     pub async fn load_latest_verified_snapshot(
         pool: &PgPool,
@@ -106,6 +168,17 @@ impl SnapshotManager {
         .await?;
 
         for row in rows {
+            // 0. Verify region identity
+            if row.region_id != region_id {
+                warn!(
+                    snapshot_id = %row.id,
+                    expected_region = %region_id,
+                    actual_region = %row.region_id,
+                    "Snapshot region ID mismatch; skipping"
+                );
+                continue;
+            }
+
             // 1. Verify SHA-256 checksum
             let mut hasher = Sha256::new();
             hasher.update(&row.payload);
@@ -136,9 +209,17 @@ impl SnapshotManager {
                 continue;
             }
 
-            // 3. Attempt deserialization & internal version validation
+            // 3. Attempt deserialization & internal version/region validation
             match serde_json::from_slice::<SnapshotDto>(&row.payload) {
                 Ok(dto) => {
+                    if dto.region_id != region_id {
+                        warn!(
+                            snapshot_id = %row.id,
+                            "Snapshot DTO region_id mismatch; falling back to earlier snapshot"
+                        );
+                        continue;
+                    }
+
                     if dto.schema_version != CURRENT_SCHEMA_VERSION
                         || dto.rules_version != CURRENT_RULES_VERSION
                         || dto.engine_version != CURRENT_ENGINE_VERSION

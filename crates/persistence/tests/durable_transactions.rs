@@ -716,3 +716,141 @@ async fn test_per_009_admission_circuit_breaker() {
     let ok = writer.commit_intent(intent).await;
     assert!(ok.is_ok(), "Commit must succeed when admission is resumed");
 }
+
+#[tokio::test]
+async fn test_per_010_negative_or_overflow_purchase_rejected() {
+    let Some(pool) = setup_test_pool().await else {
+        return;
+    };
+    let fixture = create_test_fixture(&pool, 1000, 50).await;
+    let writer = DurableWriter::new(pool.clone());
+
+    // 1. Negative quantity must be rejected and leave all balances/stocks untouched
+    let intent_negative_qty = DurableIntent {
+        command_id: Uuid::new_v4(),
+        world_id: fixture.world_id,
+        region_id: fixture.region_id,
+        ownership_epoch: fixture.epoch,
+        actor_id: Some(fixture.actor_id),
+        payload_hash: [11u8; 32],
+        tick: 80,
+        operations: vec![DurableOperation::MarketPurchase {
+            settlement_id: fixture.settlement_id,
+            buyer_wallet_id: fixture.buyer_wallet_id,
+            seller_wallet_id: None,
+            sku: "potion_healing".to_string(),
+            quantity: -1,
+            unit_price: 10,
+        }],
+        emitted_events: vec![],
+    };
+
+    let res1 = writer.commit_intent(intent_negative_qty).await;
+    match res1 {
+        Err(PersistenceError::InvalidOperation(msg)) => {
+            assert!(msg.contains("strictly positive"));
+        }
+        other => panic!("Expected InvalidOperation for negative quantity, got {other:?}"),
+    }
+
+    // 2. Negative unit_price must be rejected
+    let intent_negative_price = DurableIntent {
+        command_id: Uuid::new_v4(),
+        world_id: fixture.world_id,
+        region_id: fixture.region_id,
+        ownership_epoch: fixture.epoch,
+        actor_id: Some(fixture.actor_id),
+        payload_hash: [12u8; 32],
+        tick: 81,
+        operations: vec![DurableOperation::MarketPurchase {
+            settlement_id: fixture.settlement_id,
+            buyer_wallet_id: fixture.buyer_wallet_id,
+            seller_wallet_id: None,
+            sku: "potion_healing".to_string(),
+            quantity: 5,
+            unit_price: -10,
+        }],
+        emitted_events: vec![],
+    };
+
+    let res2 = writer.commit_intent(intent_negative_price).await;
+    assert!(matches!(res2, Err(PersistenceError::InvalidOperation(_))));
+
+    // 3. Overflow total cost must be rejected
+    let intent_overflow = DurableIntent {
+        command_id: Uuid::new_v4(),
+        world_id: fixture.world_id,
+        region_id: fixture.region_id,
+        ownership_epoch: fixture.epoch,
+        actor_id: Some(fixture.actor_id),
+        payload_hash: [13u8; 32],
+        tick: 82,
+        operations: vec![DurableOperation::MarketPurchase {
+            settlement_id: fixture.settlement_id,
+            buyer_wallet_id: fixture.buyer_wallet_id,
+            seller_wallet_id: None,
+            sku: "potion_healing".to_string(),
+            quantity: i64::MAX,
+            unit_price: 2,
+        }],
+        emitted_events: vec![],
+    };
+
+    let res3 = writer.commit_intent(intent_overflow).await;
+    assert!(matches!(res3, Err(PersistenceError::InvalidOperation(_))));
+
+    // Assert asset state is 100% untouched
+    assert_eq!(
+        get_wallet_balance(&pool, fixture.buyer_wallet_id).await,
+        1000
+    );
+    assert_eq!(
+        get_market_stock(&pool, fixture.settlement_id, "potion_healing").await,
+        50
+    );
+}
+
+#[tokio::test]
+async fn test_per_012_concurrent_apply_migration_no_leak_and_exact_one_record() {
+    let Some(pool) = setup_test_pool().await else {
+        return;
+    };
+
+    // Run 10 concurrent migration calls directly on the pool via tokio::join!
+    let (r1, r2, r3, r4, r5, r6, r7, r8, r9, r10) = tokio::join!(
+        apply_migration(&pool),
+        apply_migration(&pool),
+        apply_migration(&pool),
+        apply_migration(&pool),
+        apply_migration(&pool),
+        apply_migration(&pool),
+        apply_migration(&pool),
+        apply_migration(&pool),
+        apply_migration(&pool),
+        apply_migration(&pool),
+    );
+
+    for res in [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10] {
+        assert!(res.is_ok(), "Concurrent migration must succeed: {res:?}");
+    }
+
+    // Verify exactly one '0001_initial' record in _schema_migrations
+    let (count,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM _schema_migrations WHERE version = $1")
+            .bind("0001_initial")
+            .fetch_one(&pool)
+            .await
+            .expect("count migration records");
+    assert_eq!(count, 1);
+
+    // Verify zero lingering advisory locks
+    let (advisory_locks,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'")
+            .fetch_one(&pool)
+            .await
+            .expect("count advisory locks");
+    assert_eq!(
+        advisory_locks, 0,
+        "All transaction-scoped advisory locks must be released"
+    );
+}
