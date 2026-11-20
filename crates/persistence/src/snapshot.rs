@@ -192,20 +192,24 @@ impl SnapshotManager {
                 continue;
             }
 
-            // 2. Verify version compatibility with current runtime
+            // 2. Verify version compatibility with current runtime.
+            // If the latest snapshot is for an incompatible runtime, fail explicitly rather than rolling back to genesis.
             if row.schema_version != CURRENT_SCHEMA_VERSION as i32
                 || row.rules_version != CURRENT_RULES_VERSION as i32
                 || row.engine_version != CURRENT_ENGINE_VERSION
             {
-                warn!(
-                    snapshot_id = %row.id,
-                    tick = row.tick,
-                    schema_version = row.schema_version,
-                    engine_version = %row.engine_version,
-                    rules_version = row.rules_version,
-                    "Snapshot has incompatible versions; falling back to earlier snapshot"
-                );
-                continue;
+                return Err(PersistenceError::IncompatibleVersion {
+                    reason: format!(
+                        "Snapshot {} has incompatible versions: schema={} (expected {}), engine={} (expected {}), rules={} (expected {})",
+                        row.id,
+                        row.schema_version,
+                        CURRENT_SCHEMA_VERSION,
+                        row.engine_version,
+                        CURRENT_ENGINE_VERSION,
+                        row.rules_version,
+                        CURRENT_RULES_VERSION
+                    ),
+                });
             }
 
             // 3. Attempt deserialization & internal version/region validation
@@ -223,12 +227,18 @@ impl SnapshotManager {
                         || dto.rules_version != CURRENT_RULES_VERSION
                         || dto.engine_version != CURRENT_ENGINE_VERSION
                     {
-                        warn!(
-                            snapshot_id = %row.id,
-                            tick = row.tick,
-                            "Snapshot DTO internal versions incompatible; falling back to earlier snapshot"
-                        );
-                        continue;
+                        return Err(PersistenceError::IncompatibleVersion {
+                            reason: format!(
+                                "Snapshot {} DTO internal versions incompatible: schema={} (expected {}), engine={} (expected {}), rules={} (expected {})",
+                                row.id,
+                                dto.schema_version,
+                                CURRENT_SCHEMA_VERSION,
+                                dto.engine_version,
+                                CURRENT_ENGINE_VERSION,
+                                dto.rules_version,
+                                CURRENT_RULES_VERSION
+                            ),
+                        });
                     }
                     return Ok(Some((row.id, dto)));
                 }

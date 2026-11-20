@@ -849,7 +849,9 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "networking",
+ "persistence",
  "serde",
+ "sqlx",
  "thiserror",
  "tokio",
  "toml",

@@ -10,7 +10,7 @@ pub mod snapshot;
 pub mod writer;
 
 pub use error::PersistenceError;
-pub use lease::{acquire_or_renew_lease, verify_lease_fencing_tx};
+pub use lease::{acquire_or_renew_lease, verify_lease_fencing, verify_lease_fencing_tx};
 pub use migrator::{INITIAL_SCHEMA_SQL, apply_migration};
 pub use models::{
     CommandReceiptRecord, DurableEvent, DurableIntent, DurableOperation, PersistenceAck,

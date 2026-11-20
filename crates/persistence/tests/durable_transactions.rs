@@ -920,3 +920,127 @@ async fn test_per_013_i64_min_transfer_safely_rejected_without_panic() {
         100
     );
 }
+
+#[tokio::test]
+async fn test_per_015_inventory_deduction_and_inbox_tx() {
+    let Some(pool) = setup_test_pool().await else {
+        return;
+    };
+    let fixture = create_test_fixture(&pool, 1000, 50).await;
+    let writer = DurableWriter::new(pool.clone());
+
+    // 1. Initial inventory deposit: +10 potions
+    let intent_add = DurableIntent {
+        command_id: Uuid::new_v4(),
+        world_id: fixture.world_id,
+        region_id: fixture.region_id,
+        ownership_epoch: fixture.epoch,
+        actor_id: Some(fixture.actor_id),
+        payload_hash: [93u8; 32],
+        tick: 42,
+        operations: vec![DurableOperation::InventoryTransfer {
+            owner_entity_id: fixture.actor_id,
+            sku: "potion_mana".into(),
+            quantity_delta: 10,
+        }],
+        emitted_events: vec![],
+    };
+    let ack_add = writer
+        .commit_intent(intent_add)
+        .await
+        .expect("add 10 items");
+    assert_eq!(ack_add.status, ReceiptStatus::Succeeded);
+
+    let (qty1,): (i64,) = sqlx::query_as(
+        "SELECT quantity FROM inventory_slots WHERE owner_entity_id = $1 AND sku = $2",
+    )
+    .bind(fixture.actor_id)
+    .bind("potion_mana")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(qty1, 10);
+
+    // 2. Normal deduction: -3 potions (CHECK (quantity >= 0) must NOT fail on INSERT/UPDATE)
+    let intent_sub = DurableIntent {
+        command_id: Uuid::new_v4(),
+        world_id: fixture.world_id,
+        region_id: fixture.region_id,
+        ownership_epoch: fixture.epoch,
+        actor_id: Some(fixture.actor_id),
+        payload_hash: [94u8; 32],
+        tick: 43,
+        operations: vec![DurableOperation::InventoryTransfer {
+            owner_entity_id: fixture.actor_id,
+            sku: "potion_mana".into(),
+            quantity_delta: -3,
+        }],
+        emitted_events: vec![],
+    };
+    let ack_sub = writer.commit_intent(intent_sub).await.expect("sub 3 items");
+    assert_eq!(ack_sub.status, ReceiptStatus::Succeeded);
+
+    let (qty2,): (i64,) = sqlx::query_as(
+        "SELECT quantity FROM inventory_slots WHERE owner_entity_id = $1 AND sku = $2",
+    )
+    .bind(fixture.actor_id)
+    .bind("potion_mana")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(qty2, 7);
+
+    // 3. Over-deduction: -8 potions (must return InsufficientStock and keep 7)
+    let intent_over = DurableIntent {
+        command_id: Uuid::new_v4(),
+        world_id: fixture.world_id,
+        region_id: fixture.region_id,
+        ownership_epoch: fixture.epoch,
+        actor_id: Some(fixture.actor_id),
+        payload_hash: [95u8; 32],
+        tick: 44,
+        operations: vec![DurableOperation::InventoryTransfer {
+            owner_entity_id: fixture.actor_id,
+            sku: "potion_mana".into(),
+            quantity_delta: -8,
+        }],
+        emitted_events: vec![],
+    };
+    let err_over = writer.commit_intent(intent_over).await;
+    assert!(matches!(
+        err_over,
+        Err(PersistenceError::InsufficientStock {
+            available: 7,
+            required: 8,
+            ..
+        })
+    ));
+
+    let (qty3,): (i64,) = sqlx::query_as(
+        "SELECT quantity FROM inventory_slots WHERE owner_entity_id = $1 AND sku = $2",
+    )
+    .bind(fixture.actor_id)
+    .bind("potion_mana")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(qty3, 7);
+
+    // 4. Test transactional event deduplicator
+    let dedup = SqlxEventDeduplicator::new(pool.clone(), "consumer-test");
+    let test_ev = Uuid::new_v4();
+
+    // Rollback test: should not record in consumer_inbox
+    let mut tx = pool.begin().await.unwrap();
+    let is_new = dedup.process_if_new_tx(&mut tx, test_ev).await.unwrap();
+    assert!(is_new);
+    tx.rollback().await.unwrap();
+    assert!(!dedup.is_duplicate(test_ev).await.unwrap());
+
+    // Commit test: should record in consumer_inbox
+    let mut tx2 = pool.begin().await.unwrap();
+    let is_new2 = dedup.process_if_new_tx(&mut tx2, test_ev).await.unwrap();
+    assert!(is_new2);
+    tx2.commit().await.unwrap();
+    assert!(dedup.is_duplicate(test_ev).await.unwrap());
+}

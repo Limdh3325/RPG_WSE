@@ -134,8 +134,17 @@ impl RecoveryManager {
         let replayed_events_count = unapplied_events.len();
 
         // Step 4: Replay events into state using deterministic reducer
+        let mut expected_seq = committed_event_seq + 1;
         for event in unapplied_events {
-            committed_event_seq = event.event_seq as u64;
+            let ev_seq = event.event_seq as u64;
+            if ev_seq != expected_seq {
+                return Err(PersistenceError::RecoveryFailed(format!(
+                    "Non-contiguous event sequence during replay: expected {}, found {}",
+                    expected_seq, ev_seq
+                )));
+            }
+            expected_seq += 1;
+            committed_event_seq = ev_seq;
             tick = tick.max(event.tick as u64);
 
             match event.event_type.as_str() {
@@ -143,68 +152,115 @@ impl RecoveryManager {
                     rng_step = rng_step.saturating_add(1);
                 }
                 "ENTITY_SPAWNED" => {
-                    if let Ok(entity_dto) =
+                    let entity_dto =
                         serde_json::from_value::<EntityStateDto>(event.payload_json.clone())
-                    {
-                        state.entities.retain(|e| e.id != entity_dto.id);
-                        state.entities.push(entity_dto);
-                    }
+                            .map_err(|e| {
+                                PersistenceError::RecoveryFailed(format!(
+                                    "Failed to parse ENTITY_SPAWNED payload: {e}"
+                                ))
+                            })?;
+                    state.entities.retain(|e| e.id != entity_dto.id);
+                    state.entities.push(entity_dto);
                 }
                 "ENTITY_DESPAWNED" => {
-                    if let Ok(Some(parsed_id)) = event
+                    let parsed_id = event
                         .payload_json
                         .get("entity_id")
                         .cloned()
                         .map(serde_json::from_value::<EntityId>)
                         .transpose()
-                    {
-                        state.entities.retain(|e| e.id != parsed_id);
-                    }
+                        .map_err(|e| {
+                            PersistenceError::RecoveryFailed(format!(
+                                "Failed to parse ENTITY_DESPAWNED entity_id: {e}"
+                            ))
+                        })?
+                        .ok_or_else(|| {
+                            PersistenceError::RecoveryFailed(
+                                "ENTITY_DESPAWNED payload missing entity_id".into(),
+                            )
+                        })?;
+                    state.entities.retain(|e| e.id != parsed_id);
                 }
                 "ENTITY_MOVED" => {
-                    let id_res = event
+                    let parsed_id = event
                         .payload_json
                         .get("entity_id")
                         .cloned()
                         .map(serde_json::from_value::<EntityId>)
-                        .transpose();
-                    let pos_res = event
+                        .transpose()
+                        .map_err(|e| {
+                            PersistenceError::RecoveryFailed(format!(
+                                "Failed to parse ENTITY_MOVED entity_id: {e}"
+                            ))
+                        })?
+                        .ok_or_else(|| {
+                            PersistenceError::RecoveryFailed(
+                                "ENTITY_MOVED payload missing entity_id".into(),
+                            )
+                        })?;
+                    let new_pos = event
                         .payload_json
                         .get("position")
                         .cloned()
                         .map(serde_json::from_value::<PositionDto>)
-                        .transpose();
+                        .transpose()
+                        .map_err(|e| {
+                            PersistenceError::RecoveryFailed(format!(
+                                "Failed to parse ENTITY_MOVED position: {e}"
+                            ))
+                        })?
+                        .ok_or_else(|| {
+                            PersistenceError::RecoveryFailed(
+                                "ENTITY_MOVED payload missing position".into(),
+                            )
+                        })?;
 
-                    if let (Ok(Some(parsed_id)), Ok(Some(new_pos))) = (id_res, pos_res)
-                        && let Some(entity) = state.entities.iter_mut().find(|e| e.id == parsed_id)
-                    {
+                    if let Some(entity) = state.entities.iter_mut().find(|e| e.id == parsed_id) {
                         entity.position = new_pos;
                     }
                 }
                 "SCHEDULED_ACTION_CREATED" => {
-                    if let Ok(action_dto) =
+                    let action_dto =
                         serde_json::from_value::<ScheduledActionDto>(event.payload_json.clone())
-                    {
-                        scheduled_actions.retain(|a| a.id != action_dto.id);
-                        scheduled_actions.push(action_dto);
-                    }
+                            .map_err(|e| {
+                                PersistenceError::RecoveryFailed(format!(
+                                    "Failed to parse SCHEDULED_ACTION_CREATED payload: {e}"
+                                ))
+                            })?;
+                    scheduled_actions.retain(|a| a.id != action_dto.id);
+                    scheduled_actions.push(action_dto);
                 }
                 "SCHEDULED_ACTION_COMPLETED" | "SCHEDULED_ACTION_CANCELLED" => {
-                    if let Ok(Some(action_id)) = event
+                    let action_id = event
                         .payload_json
                         .get("action_id")
                         .cloned()
                         .map(serde_json::from_value::<Uuid>)
                         .transpose()
-                    {
-                        scheduled_actions.retain(|a| a.id != action_id);
-                    }
+                        .map_err(|e| {
+                            PersistenceError::RecoveryFailed(format!(
+                                "Failed to parse SCHEDULED_ACTION action_id: {e}"
+                            ))
+                        })?
+                        .ok_or_else(|| {
+                            PersistenceError::RecoveryFailed(
+                                "SCHEDULED_ACTION payload missing action_id".into(),
+                            )
+                        })?;
+                    scheduled_actions.retain(|a| a.id != action_id);
                 }
-                _ => {}
+                unknown => {
+                    return Err(PersistenceError::RecoveryFailed(format!(
+                        "Unknown domain event type '{unknown}' during replay"
+                    )));
+                }
             }
         }
 
         state.tick = tick;
+
+        // Verify that our lease is still valid and not stolen during recovery
+        crate::verify_lease_fencing(pool, region_id, new_epoch).await?;
 
         // Verify restored invariants
         if state.epoch != new_epoch as u64 {

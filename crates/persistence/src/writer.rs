@@ -546,19 +546,32 @@ impl DurableWriter {
                         });
                     }
 
-                    sqlx::query(
-                        r#"
-                        INSERT INTO inventory_slots (owner_entity_id, sku, quantity, version)
-                        VALUES ($1, $2, $3, 1)
-                        ON CONFLICT (owner_entity_id, sku)
-                        DO UPDATE SET quantity = inventory_slots.quantity + $3, version = inventory_slots.version + 1
-                        "#,
-                    )
-                    .bind(owner_entity_id)
-                    .bind(sku)
-                    .bind(quantity_delta)
-                    .execute(&mut **tx)
-                    .await?;
+                    if existing.is_some() {
+                        sqlx::query(
+                            r#"
+                            UPDATE inventory_slots
+                            SET quantity = $3, version = version + 1
+                            WHERE owner_entity_id = $1 AND sku = $2
+                            "#,
+                        )
+                        .bind(owner_entity_id)
+                        .bind(sku)
+                        .bind(new_qty)
+                        .execute(&mut **tx)
+                        .await?;
+                    } else {
+                        sqlx::query(
+                            r#"
+                            INSERT INTO inventory_slots (owner_entity_id, sku, quantity, version)
+                            VALUES ($1, $2, $3, 1)
+                            "#,
+                        )
+                        .bind(owner_entity_id)
+                        .bind(sku)
+                        .bind(new_qty)
+                        .execute(&mut **tx)
+                        .await?;
+                    }
                 }
             }
         }

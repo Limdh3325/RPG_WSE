@@ -26,6 +26,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("configuration valid; no database connection or simulation started");
         return Ok(());
     }
+
+    if let Ok(db_url) = std::env::var("DATABASE_URL") {
+        tracing::info!(
+            "DATABASE_URL detected; initializing database pool and running migrations..."
+        );
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(config.persistence.pool_max_connections)
+            .connect(&db_url)
+            .await?;
+        persistence::apply_migration(&pool).await?;
+        tracing::info!("database migrations applied successfully; persistence layer ready");
+    }
+
     let listener = tokio::net::TcpListener::bind(config.server.http_listen).await?;
     tracing::info!(address = %listener.local_addr()?, milestone = "M0", "bootstrap listening; readiness unavailable");
     axum_serve(listener).await?;

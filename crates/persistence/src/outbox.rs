@@ -180,6 +180,29 @@ impl SqlxEventDeduplicator {
         Ok(result.rows_affected() == 1)
     }
 
+    /// Attempts to record the event into durable storage within an existing transaction.
+    /// Returns Ok(true) if the event is NEW (claimed for processing).
+    /// Returns Ok(false) if the event was ALREADY PROCESSED or claimed (duplicate).
+    pub async fn process_if_new_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        event_id: Uuid,
+    ) -> Result<bool, PersistenceError> {
+        let result = sqlx::query(
+            r#"
+            INSERT INTO consumer_inbox (consumer_id, event_id, processed_at)
+            VALUES ($1, $2, clock_timestamp())
+            ON CONFLICT (consumer_id, event_id) DO NOTHING
+            "#,
+        )
+        .bind(&self.consumer_id)
+        .bind(event_id)
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(result.rows_affected() == 1)
+    }
+
     pub async fn is_duplicate(&self, event_id: Uuid) -> Result<bool, PersistenceError> {
         let row: Option<(i32,)> = sqlx::query_as(
             r#"

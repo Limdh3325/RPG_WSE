@@ -120,3 +120,38 @@ pub async fn verify_lease_fencing_tx(
         }),
     }
 }
+
+pub async fn verify_lease_fencing(
+    pool: &PgPool,
+    region_id: Uuid,
+    expected_epoch: i64,
+) -> Result<(), PersistenceError> {
+    let lease_row: Option<(i64, bool)> = sqlx::query_as(
+        r#"
+        SELECT ownership_epoch, (lease_expires_at > clock_timestamp()) AS is_valid
+        FROM region_leases
+        WHERE region_id = $1
+        "#,
+    )
+    .bind(region_id)
+    .fetch_optional(pool)
+    .await?;
+
+    match lease_row {
+        Some((epoch, is_valid)) => {
+            if epoch != expected_epoch || !is_valid {
+                return Err(PersistenceError::LeaseFencingFailed {
+                    region_id,
+                    expected_epoch,
+                    actual_epoch: Some(epoch),
+                });
+            }
+            Ok(())
+        }
+        None => Err(PersistenceError::LeaseFencingFailed {
+            region_id,
+            expected_epoch,
+            actual_epoch: None,
+        }),
+    }
+}
