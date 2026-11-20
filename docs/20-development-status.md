@@ -11,7 +11,7 @@
 | 002 ECS | F-002 | Stable ID 생성/삭제/복원, 10,000 Entity 수명주기, 중복 거부 | DONE (로컬 게이트 통과) |
 | 003 Tick | F-001/003, N-001 | 10,000 Tick 상태·이벤트 hash | DONE (로컬 게이트 통과) |
 | 004 계약 | F-004/009, N-008 | 중복/순서/버전/규칙 순환 | DONE (로컬 게이트 통과) |
-| 005 이동/전투 | F-007/008/015 | 충돌/경로/사거리/사망 | NOT STARTED |
+| 005 이동/전투 | F-007/008/015 | 충돌/경로/사거리/사망 | DONE (로컬 게이트 통과) |
 | 006 Worker | F-005/017, N-005 | single writer, bounded queue, 종료 | NOT STARTED |
 | 007 영속 거래 | F-004/005/010, N-004/009 | 실제 PG, Commit/ACK failpoint | NOT STARTED |
 | 008 복구 | F-010, N-009 | checksum/재시작/receipt/RNG | NOT STARTED |
