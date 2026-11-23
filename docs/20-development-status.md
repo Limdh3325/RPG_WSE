@@ -13,13 +13,13 @@
 | 004 계약 | F-004/009, N-008 | 중복/순서/버전/규칙 순환 | DONE (로컬 게이트 통과) |
 | 005 이동/전투 | F-007/008/015 | 충돌/경로/사거리/사망 | DONE (로컬 게이트 통과) |
 | 006 Worker | F-005/017, N-005 | single writer, bounded queue, 종료 | DONE (로컬 게이트 통과) |
-| 007 영속 거래 | F-004/005/010, N-004/009 | 실제 PG, Commit/ACK failpoint | NOT STARTED |
-| 008 복구 | F-010, N-009 | checksum/재시작/receipt/RNG | NOT STARTED |
-| 009 통신 | F-011, N-006/008 | 2 Client/위조/gap/reconnect | NOT STARTED |
-| 010 NPC | F-006/014 | 무입력 생활/계획 실패 복구 | NOT STARTED |
-| 011 경제 | F-009/013/015 | 부족→수송대→습격→경제 결과 | NOT STARTED |
-| 012A 화면 | F-007/008/011 | 실제 브라우저 E2E | NOT STARTED |
-| 012B 프롤로그 | F-016 | TEST-PRO-001~006 | NOT STARTED |
+| 007 영속 거래 | F-004/005/010, N-004/009 | 실제 PG, Commit/ACK failpoint | DONE (M3 승인) |
+| 008 복구 | F-010, N-009 | checksum/재시작/receipt/RNG | DONE (M3 승인) |
+| 009 통신 | F-011, N-006/008 | 2 Client/위조/gap/reconnect | DONE (M4 승인) |
+| 010 NPC | F-006/014 | 무입력 생활/계획 실패 복구 | DONE (M5 승인) |
+| 011 경제 | F-009/013/015 | 부족→수송대→습격→경제 결과 | DONE (M5 승인) |
+| 012A 화면 | F-007/008/011 | 실제 브라우저 E2E | DONE (M4 승인) |
+| 012B 프롤로그 | F-016 | TEST-PRO-001~007 | DONE (M6 승인) |
 | 013 계측/부하 | F-012, N-002/003/005/007 | 지표/부하/soak/Background 정합성 | NOT STARTED |
 | 014 운영 | F-017, N-006/009 | 백업 복원/배포/runbook | NOT STARTED |
 | 후속 LLM | F-018 | 비권한 제안, timeout/fallback | DEFERRED |
