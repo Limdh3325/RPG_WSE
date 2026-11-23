@@ -153,4 +153,11 @@ export type ServerMessage =
         target_region_id: string;
         rewards: PrologueRewardWire[];
       };
+    }
+  | {
+      type: 'announcement';
+      payload: {
+        title: string;
+        message: string;
+      };
     };

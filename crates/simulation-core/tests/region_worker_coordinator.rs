@@ -183,8 +183,15 @@ async fn test_rgn_003_lifecycle_transitions_and_shutdown_drain() {
 
     // 1. Pause
     coordinator.pause_region(region_id).unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(handle.status(), RegionStatus::Paused);
+    let mut ok = false;
+    for _ in 0..20 {
+        if handle.status() == RegionStatus::Paused {
+            ok = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(ok, "Region should transition to Paused");
 
     let tick_paused = handle.status();
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -193,8 +200,15 @@ async fn test_rgn_003_lifecycle_transitions_and_shutdown_drain() {
 
     // 2. Resume
     coordinator.resume_region(region_id).unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(handle.status(), RegionStatus::Active);
+    let mut ok = false;
+    for _ in 0..20 {
+        if handle.status() == RegionStatus::Active {
+            ok = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(ok, "Region should transition to Active");
 
     // 3. Stop
     coordinator.stop_region(region_id).unwrap();

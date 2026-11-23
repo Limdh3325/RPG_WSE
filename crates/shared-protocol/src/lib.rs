@@ -171,4 +171,8 @@ pub enum ServerMessage {
         target_region_id: Uuid,
         rewards: Vec<PrologueRewardWire>,
     },
+    Announcement {
+        title: String,
+        message: String,
+    },
 }
