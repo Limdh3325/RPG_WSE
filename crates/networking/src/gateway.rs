@@ -7,8 +7,8 @@ use axum::Json;
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use axum::http::header::CONTENT_TYPE;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use futures_util::{SinkExt, StreamExt};
@@ -22,6 +22,7 @@ use simulation_systems::prologue::{
     FilePrologueStorage, PrologueAction, PrologueManager, PrologueState,
 };
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -51,6 +52,8 @@ pub struct GatewayState {
     pub prologue_manager: Arc<Mutex<PrologueManager>>,
     pub simulation: Option<Arc<SettlementSimulation>>,
     pub metrics: Arc<WseMetricsRegistry>,
+    pub is_draining: Arc<AtomicBool>,
+    pub admin_token: Arc<RwLock<Option<String>>>,
 }
 
 impl GatewayState {
@@ -73,7 +76,25 @@ impl GatewayState {
             prologue_manager: Arc::new(Mutex::new(prologue_manager)),
             simulation: None,
             metrics: Arc::new(WseMetricsRegistry::global().clone()),
+            is_draining: Arc::new(AtomicBool::new(false)),
+            admin_token: Arc::new(RwLock::new(std::env::var("WSE_ADMIN_TOKEN").ok())),
         }
+    }
+
+    pub fn with_admin_token(self, token: impl Into<String>) -> Self {
+        *self.admin_token.write().unwrap() = Some(token.into());
+        self
+    }
+
+    pub fn is_draining(&self) -> bool {
+        self.is_draining.load(Ordering::Relaxed)
+    }
+
+    pub fn start_drain(&self) {
+        self.is_draining.store(true, Ordering::SeqCst);
+        info!(
+            "Server entered graceful drain state; no new tickets or connections will be admitted"
+        );
     }
 
     pub fn with_metrics(mut self, metrics: Arc<WseMetricsRegistry>) -> Self {
@@ -127,11 +148,81 @@ pub struct RegionStatusResponse {
 
 pub fn create_gateway_router(state: Arc<GatewayState>) -> Router {
     Router::new()
+        .route("/health/live", get(health_live_handler))
+        .route("/health/ready", get(health_ready_handler))
+        .route("/api/v1/admin/drain", post(admin_drain_handler))
         .route("/api/v1/ws-tickets", post(issue_ticket_handler))
         .route("/api/v1/regions/{id}/status", get(region_status_handler))
         .route("/metrics", get(metrics_handler))
         .route("/ws", get(ws_upgrade_handler))
         .with_state(state)
+}
+
+async fn health_live_handler() -> impl IntoResponse {
+    (StatusCode::OK, "OK")
+}
+
+async fn health_ready_handler(State(state): State<Arc<GatewayState>>) -> impl IntoResponse {
+    if state.is_draining() {
+        (StatusCode::SERVICE_UNAVAILABLE, "DRAINING")
+    } else {
+        (StatusCode::OK, "READY")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminDrainResponse {
+    pub status: String,
+    pub message: String,
+}
+
+async fn admin_drain_handler(
+    State(state): State<Arc<GatewayState>>,
+    headers: HeaderMap,
+) -> Result<Json<AdminDrainResponse>, (StatusCode, String)> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
+    let token = auth_header.strip_prefix("Bearer ").unwrap_or(auth_header);
+
+    let configured_token = state
+        .admin_token
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+
+    if let Some(expected) = configured_token {
+        if token.is_empty() {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "Missing Bearer token in Authorization header".into(),
+            ));
+        }
+        if token != expected {
+            warn!(
+                admin_action = "drain_rejected",
+                reason = "invalid_token",
+                "Admin drain attempt rejected due to invalid token"
+            );
+            return Err((
+                StatusCode::FORBIDDEN,
+                "Forbidden: invalid admin token".into(),
+            ));
+        }
+    }
+
+    state.start_drain();
+    info!(
+        admin_action = "drain_initiated",
+        "Graceful drain started via administrative API"
+    );
+
+    Ok(Json(AdminDrainResponse {
+        status: "DRAINING".into(),
+        message: "Server has entered graceful drain mode. Readiness probe now returns 503.".into(),
+    }))
 }
 
 async fn metrics_handler(State(state): State<Arc<GatewayState>>) -> impl IntoResponse {
@@ -184,6 +275,17 @@ async fn issue_ticket_handler(
     State(state): State<Arc<GatewayState>>,
     Json(payload): Json<WsTicketRequest>,
 ) -> Result<Json<WsTicketResponse>, (StatusCode, String)> {
+    if state.is_draining() {
+        warn!(
+            account_id = %payload.account_id,
+            "Ticket issuance rejected: server is in graceful drain mode"
+        );
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Server is in graceful drain mode; no new tickets accepted".into(),
+        ));
+    }
+
     let (ticket, expires_in_secs) = state.ticket_store.issue_ticket(
         payload.account_id,
         payload.actor_id,

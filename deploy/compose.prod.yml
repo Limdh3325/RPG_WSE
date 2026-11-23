@@ -1,0 +1,74 @@
+name: wse-prod
+
+services:
+  postgres:
+    image: postgres:16.11-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${WSE_POSTGRES_USER:-wse_prod}
+      POSTGRES_PASSWORD: ${WSE_POSTGRES_PASSWORD:?Set WSE_POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_DB: ${WSE_POSTGRES_DB:-wse_prod}
+    ports:
+      - "127.0.0.1:${WSE_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - wse_prod_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${WSE_POSTGRES_USER:-wse_prod} -d ${WSE_POSTGRES_DB:-wse_prod}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - wse-internal
+
+  game-server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${WSE_POSTGRES_USER:-wse_prod}:${WSE_POSTGRES_PASSWORD}@postgres:5432/${WSE_POSTGRES_DB:-wse_prod}
+      WSE_ADMIN_TOKEN: ${WSE_ADMIN_TOKEN:?Set WSE_ADMIN_TOKEN in deploy/.env}
+      PROLOGUE_DATA_DIR: /app/data/prologue
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "127.0.0.1:18080:18080"
+    volumes:
+      - wse_prod_prologue:/app/data/prologue
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:18080/health/live || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - wse-internal
+      - wse-public
+
+  web-client:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.client
+    restart: unless-stopped
+    depends_on:
+      game-server:
+        condition: service_healthy
+    ports:
+      - "${WSE_HTTP_PORT:-80}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - wse-public
+
+volumes:
+  wse_prod_pgdata:
+  wse_prod_prologue:
+
+networks:
+  wse-internal:
+    internal: true
+  wse-public:

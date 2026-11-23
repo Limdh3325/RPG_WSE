@@ -1,0 +1,40 @@
+# Multi-stage Dockerfile for WSE Game Server
+FROM rust:1.90.0-bookworm AS builder
+
+WORKDIR /build
+
+# Copy workspace manifests
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY apps ./apps
+
+# Build game-server release binary
+RUN cargo build --release -p game-server
+
+# Final runtime image
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -u 10001 -s /bin/bash wse
+
+WORKDIR /app
+
+COPY --from=builder /build/target/release/game-server /usr/local/bin/game-server
+
+RUN mkdir -p /app/data/prologue && chown -R wse:wse /app
+
+USER wse
+
+ENV RUST_LOG=info
+ENV PROLOGUE_DATA_DIR=/app/data/prologue
+
+EXPOSE 18080
+
+HEALTHCHECK --interval=5s --timeout=3s --retries=3 \
+  CMD curl -f http://127.0.0.1:18080/health/live || exit 1
+
+ENTRYPOINT ["/usr/local/bin/game-server"]
