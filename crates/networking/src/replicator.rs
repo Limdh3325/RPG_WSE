@@ -12,8 +12,8 @@ pub struct RegionReplicator {
     pub sessions: Arc<RwLock<HashMap<Uuid, SharedSession>>>,
     /// Tracks which entity IDs are currently visible to each session
     session_visible: Arc<RwLock<HashMap<Uuid, HashSet<Uuid>>>>,
-    /// Tracks previous entity positions to detect movements
-    last_known_positions: Arc<RwLock<HashMap<Uuid, (i32, i32)>>>,
+    /// Tracks previous entity states to detect movements and property changes
+    last_known_states: Arc<RwLock<HashMap<Uuid, EntityStateWire>>>,
     pub world_revision: AtomicU64,
 }
 
@@ -23,7 +23,7 @@ impl RegionReplicator {
             region_id,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             session_visible: Arc::new(RwLock::new(HashMap::new())),
-            last_known_positions: Arc::new(RwLock::new(HashMap::new())),
+            last_known_states: Arc::new(RwLock::new(HashMap::new())),
             world_revision: AtomicU64::new(1),
         }
     }
@@ -55,6 +55,14 @@ impl RegionReplicator {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         sessions.len()
+    }
+
+    pub fn get_last_known_state(&self, entity_id: &Uuid) -> Option<EntityStateWire> {
+        let cache = self
+            .last_known_states
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache.get(entity_id).cloned()
     }
 
     /// Sends a full baseline snapshot to a specific session, filtered by its AOI.
@@ -96,12 +104,12 @@ impl RegionReplicator {
         }
 
         {
-            let mut pos_cache = self
-                .last_known_positions
+            let mut state_cache = self
+                .last_known_states
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             for entity in all_entities {
-                pos_cache.insert(entity.id, (entity.x, entity.y));
+                state_cache.insert(entity.id, entity.clone());
             }
         }
 
@@ -136,28 +144,28 @@ impl RegionReplicator {
         let current_map: HashMap<Uuid, &EntityStateWire> =
             all_entities.iter().map(|e| (e.id, e)).collect();
 
-        // Detect changed entities compared to last known positions
+        // Detect changed entities compared to last known states
         let mut changed_entities: HashMap<Uuid, &EntityStateWire> = HashMap::new();
         {
-            let mut pos_cache = self
-                .last_known_positions
+            let mut state_cache = self
+                .last_known_states
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
 
             for entity in all_entities {
-                if let Some(old_pos) = pos_cache.get(&entity.id) {
-                    if *old_pos != (entity.x, entity.y) {
+                if let Some(old_state) = state_cache.get(&entity.id) {
+                    if old_state != entity {
                         changed_entities.insert(entity.id, entity);
-                        pos_cache.insert(entity.id, (entity.x, entity.y));
+                        state_cache.insert(entity.id, entity.clone());
                     }
                 } else {
                     changed_entities.insert(entity.id, entity);
-                    pos_cache.insert(entity.id, (entity.x, entity.y));
+                    state_cache.insert(entity.id, entity.clone());
                 }
             }
 
             // Remove entities that no longer exist
-            pos_cache.retain(|id, _| current_map.contains_key(id));
+            state_cache.retain(|id, _| current_map.contains_key(id));
         }
 
         let mut disconnected_sessions = Vec::new();
