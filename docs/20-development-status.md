@@ -20,7 +20,7 @@
 | 011 경제 | F-009/013/015 | 부족→수송대→습격→경제 결과 | DONE (M5 승인) |
 | 012A 화면 | F-007/008/011 | 실제 브라우저 E2E | DONE (M4 승인) |
 | 012B 프롤로그 | F-016 | TEST-PRO-001~007 | DONE (M6 승인) |
-| 013 계측/부하 | F-012, N-002/003/005/007 | 지표/부하/soak/Background 정합성 | NOT STARTED |
+| 013 계측/부하 | F-012, N-002/003/005/007 | 지표/부하/soak/Background 정합성 | DONE (M7 구현/검증) |
 | 014 운영 | F-017, N-006/009 | 백업 복원/배포/runbook | NOT STARTED |
 | 후속 LLM | F-018 | 비권한 제안, timeout/fallback | DEFERRED |
 | 후속 분산 | F-019 | 다중 서버 Region 이관 | DEFERRED |

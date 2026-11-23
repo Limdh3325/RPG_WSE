@@ -1,6 +1,7 @@
 use crate::gateway::InboundCommand;
 use crate::replicator::RegionReplicator;
 use crate::session::SharedSession;
+use observability::WseMetricsRegistry;
 use shared_protocol::{EntityStateWire, ServerMessage, WireCommandPayload, WireCommandStatus};
 use simulation_systems::economy::{FoodLedger, FoodLedgerOp, SettlementEconomy};
 use simulation_systems::event_chain::{CaravanEventChain, CaravanPhase, CaravanResolution};
@@ -324,6 +325,13 @@ impl SettlementSimulation {
         self.tick.load(Ordering::Relaxed)
     }
 
+    pub fn entity_count(&self) -> usize {
+        self.entities
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .len()
+    }
+
     pub fn get_player_gold(&self, actor_id: &Uuid) -> i64 {
         let gold_map = self.player_gold.read().unwrap_or_else(|p| p.into_inner());
         *gold_map.get(actor_id).unwrap_or(&20) // Default 20 gold per player
@@ -591,6 +599,7 @@ impl SettlementSimulation {
 
     /// Advance settlement simulation by one tick (10Hz).
     pub fn step_tick(&self) -> Vec<Uuid> {
+        let tick_start = std::time::Instant::now();
         let current_tick = self.tick.fetch_add(1, Ordering::Relaxed) + 1;
 
         let entities_snapshot = {
@@ -926,6 +935,30 @@ impl SettlementSimulation {
 
             map.values().map(|e| e.state.clone()).collect::<Vec<_>>()
         };
+
+        // Record telemetry metrics for TASK-013
+        let region_str = self.region_id.to_string();
+        let metrics = WseMetricsRegistry::global();
+
+        let mut players = 0i64;
+        let mut npcs = 0i64;
+        let mut monsters = 0i64;
+        for e in entities_snapshot.iter() {
+            match e.entity_type.as_str() {
+                "player" => players += 1,
+                "monster" | "bandit" => monsters += 1,
+                _ => npcs += 1,
+            }
+        }
+        metrics.set_region_entities(&region_str, "player", players);
+        metrics.set_region_entities(&region_str, "npc", npcs);
+        metrics.set_region_entities(&region_str, "monster", monsters);
+
+        let tick_duration = tick_start.elapsed().as_secs_f64();
+        metrics.record_tick_duration(&region_str, "normal", tick_duration);
+        if tick_duration > 0.050 {
+            metrics.record_tick_overrun(&region_str);
+        }
 
         // Broadcast AOI delta tick to all connected sessions
         self.replicator

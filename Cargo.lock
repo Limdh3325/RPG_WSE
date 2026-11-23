@@ -1334,6 +1334,7 @@ dependencies = [
  "axum",
  "futures-util",
  "game-domain",
+ "observability",
  "serde",
  "serde_json",
  "shared-protocol",
@@ -1404,6 +1405,16 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
  "libm",
+]
+
+[[package]]
+name = "observability"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

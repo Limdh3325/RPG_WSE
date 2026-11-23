@@ -1,5 +1,6 @@
 use crate::aoi::AoiFilter;
 use crate::session::{SessionError, SharedSession};
+use observability::WseMetricsRegistry;
 use shared_protocol::{EntityStateWire, ServerMessage};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -55,6 +56,10 @@ impl RegionReplicator {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         sessions.len()
+    }
+
+    pub fn world_revision(&self) -> u64 {
+        self.world_revision.load(Ordering::Relaxed)
     }
 
     pub fn get_last_known_state(&self, entity_id: &Uuid) -> Option<EntityStateWire> {
@@ -276,6 +281,7 @@ impl RegionReplicator {
         all_entities: &[EntityStateWire],
     ) -> Result<(), SessionError> {
         debug!(%session_id, "Handling client resync request");
+        WseMetricsRegistry::global().record_client_resync("gap_detection");
         self.send_initial_snapshot(session_id, region_tick, all_entities)
     }
 
