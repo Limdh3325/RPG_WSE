@@ -83,6 +83,11 @@ impl GatewayState {
         self
     }
 
+    pub fn with_prologue_manager(mut self, prologue_manager: Arc<Mutex<PrologueManager>>) -> Self {
+        self.prologue_manager = prologue_manager;
+        self
+    }
+
     pub fn get_or_create_replicator(&self, region_id: Uuid) -> Arc<RegionReplicator> {
         let mut map = self
             .replicators
@@ -434,22 +439,22 @@ async fn handle_socket(socket: WebSocket, state: Arc<GatewayState>) {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let action = match action_type.as_str() {
-                    "talk_to_npc" => PrologueAction::TalkToNpc {
+                    "talk" | "talk_to_npc" => PrologueAction::TalkToNpc {
                         npc_name: target_id.unwrap_or_else(|| "Elder Elda".to_string()),
                     },
-                    "gather" => PrologueAction::GatherResource {
+                    "gather" | "gather_resource" => PrologueAction::GatherResource {
                         resource_type: target_id.unwrap_or_else(|| "wild_herbs".to_string()),
                         amount: 1,
                     },
-                    "waypoint" => PrologueAction::ReachWaypoint { x: 100, y: 100 },
-                    "defeat_encounter" => PrologueAction::DefeatEncounter {
+                    "waypoint" | "reach_waypoint" => PrologueAction::ReachWaypoint { x: 100, y: 100 },
+                    "defeat" | "defeat_encounter" => PrologueAction::DefeatEncounter {
                         target_id: target_id.unwrap_or_else(|| "goblin_scout".to_string()),
                     },
-                    "pack_supplies" => PrologueAction::PackSupplies {
+                    "pack" | "pack_supplies" => PrologueAction::PackSupplies {
                         supply_id: target_id
                             .unwrap_or_else(|| "frontier_cart_supplies".to_string()),
                     },
-                    "enter_settlement" => PrologueAction::EnterSettlementGate,
+                    "enter_gate" | "enter_settlement" => PrologueAction::EnterSettlementGate,
                     _ => PrologueAction::EnterSettlementGate,
                 };
                 let now_ms = std::time::SystemTime::now()
@@ -471,7 +476,17 @@ async fn handle_socket(socket: WebSocket, state: Arc<GatewayState>) {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0);
-                if let Err(e) = manager.report_movement_failure(session.actor_id, &reason, now_ms) {
+                let reason_lower = reason.to_lowercase();
+                if reason_lower.contains("casualty")
+                    || reason_lower.contains("combat")
+                    || reason_lower.contains("death")
+                    || reason_lower.contains("defeat")
+                    || reason_lower.contains("advance")
+                {
+                    if let Err(e) = manager.trigger_npc_casualty_fallback(session.actor_id, &reason, now_ms) {
+                        warn!(%session_id, ?e, "Failed to trigger prologue combat/casualty fallback");
+                    }
+                } else if let Err(e) = manager.report_movement_failure(session.actor_id, &reason, now_ms) {
                     warn!(%session_id, ?e, "Failed to report prologue movement failure");
                 }
                 let sync = make_prologue_sync_message(&manager, &session.actor_id);
@@ -513,12 +528,14 @@ async fn handle_socket(socket: WebSocket, state: Arc<GatewayState>) {
                         // Replicate live session transfer to the target shared world region
                         let current_region = session.region_id();
                         if current_region != target {
-                            let reps = state
-                                .replicators
-                                .read()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner());
-                            if let Some(old_rep) = reps.get(&current_region) {
-                                old_rep.remove_session(&session.session_id);
+                            {
+                                let reps = state
+                                    .replicators
+                                    .read()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                if let Some(old_rep) = reps.get(&current_region) {
+                                    old_rep.remove_session(&session.session_id);
+                                }
                             }
                             session.set_region_id(target);
                             let new_rep = state.get_or_create_replicator(target);

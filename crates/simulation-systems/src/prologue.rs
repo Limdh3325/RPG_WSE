@@ -765,6 +765,9 @@ impl PrologueManager {
                         ready_at_ms: now_ms,
                     };
                     session.state = state.clone();
+                    if let Some(storage) = &self.storage {
+                        storage.save_session(session)?;
+                    }
                     return Ok(state);
                 }
             };
