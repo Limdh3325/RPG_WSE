@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use ecs_components::grid::MapGrid;
 use game_domain::RegionId;
@@ -89,6 +90,41 @@ impl RegionCoordinator {
         }
 
         let (worker, handle) = RegionWorker::new(region_id, epoch, map_grid, seed, event_tx);
+        let thread_handle = worker.spawn_thread();
+
+        regions.insert(region_id, handle.clone());
+        self.threads
+            .write()
+            .unwrap()
+            .insert(region_id, thread_handle);
+
+        Ok(handle)
+    }
+
+    /// Spawns and manages a new RegionWorker configured with custom simulation hooks and tick interval.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_region_configured(
+        &self,
+        region_id: RegionId,
+        epoch: u64,
+        map_grid: MapGrid,
+        seed: u64,
+        event_tx: Option<Sender<TickOutput>>,
+        hooks: Option<Box<dyn crate::hook::SimulationPhaseHooks>>,
+        tick_interval: Option<Duration>,
+    ) -> Result<RegionHandle, CoordinatorError> {
+        let mut regions = self.regions.write().unwrap();
+        if regions.contains_key(&region_id) {
+            return Err(CoordinatorError::RegionAlreadyExists(region_id));
+        }
+
+        let (mut worker, handle) = RegionWorker::new(region_id, epoch, map_grid, seed, event_tx);
+        if let Some(h) = hooks {
+            worker.set_hooks(h);
+        }
+        if let Some(interval) = tick_interval {
+            worker.set_tick_interval(interval);
+        }
         let thread_handle = worker.spawn_thread();
 
         regions.insert(region_id, handle.clone());

@@ -2,8 +2,17 @@ use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
 use clap::Parser;
+use game_domain::id::{RegionId, SessionId};
 use game_server::config::Config;
 use networking::{DEFAULT_SETTLEMENT_REGION_ID, GatewayState, create_gateway_router};
+use shared_protocol::EntityStateWire;
+use simulation_core::coordinator::RegionCoordinator;
+use simulation_systems::economy::SettlementEconomy;
+use simulation_systems::faction::FactionManager;
+use simulation_systems::integrated_hooks::IntegratedSimulationHooks;
+use simulation_systems::rule_dsl::DynamicRuleRegistry;
+use simulation_systems::scheduler::NpcScheduler;
+use simulation_systems::system::NpcAiSystem;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -77,18 +86,82 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 1. Initialize Gateway State with Settlement Live Simulation
-    let state =
-        Arc::new(GatewayState::default().with_settlement_simulation(DEFAULT_SETTLEMENT_REGION_ID));
+    // 1. Initialize RegionCoordinator and spawn authoritative settlement RegionWorker
+    let coordinator = Arc::new(RegionCoordinator::new());
+    let settlement_region_id = RegionId(DEFAULT_SETTLEMENT_REGION_ID);
+    let epoch = 1;
+    let seed = 12345;
+    let tick_interval = Duration::from_millis(1000 / config.simulation.tick_rate_hz as u64);
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1024);
 
-    // 2. Spawn 50ms tick loop for live simulation and AOI delta replication
-    let state_for_tick = state.clone();
+    let hooks = Box::new(IntegratedSimulationHooks::new(
+        NpcAiSystem::default(),
+        NpcScheduler::default(),
+        SettlementEconomy::new_default(1),
+        FactionManager::default(),
+        DynamicRuleRegistry::default(),
+        SessionId::from_u128(seed as u128),
+        settlement_region_id,
+    ));
+
+    let _region_handle = coordinator
+        .spawn_region_configured(
+            settlement_region_id,
+            epoch,
+            ecs_components::grid::MapGrid::default_64x64(),
+            seed,
+            Some(event_tx),
+            Some(hooks),
+            Some(tick_interval),
+        )
+        .expect("failed to spawn settlement region worker");
+
+    // 2. Initialize Gateway State with RegionCoordinator and Replicator
+    let state = Arc::new(GatewayState::default().with_coordinator(coordinator.clone()));
+    let replicator = state.get_or_create_replicator(DEFAULT_SETTLEMENT_REGION_ID);
+
+    // 3. Connect TickOutput event stream to RegionReplicator
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(50));
-        loop {
-            interval.tick().await;
-            if let Some(ref sim) = state_for_tick.simulation {
-                sim.step_tick();
+        while let Some(tick_output) = event_rx.recv().await {
+            let mut entities_wire: Vec<EntityStateWire> = Vec::new();
+            // Replicate player & NPC position/stats from tick events or canonical state
+            for event in &tick_output.events {
+                match event {
+                    simulation_core::event::SimulationEvent::EntityMoved {
+                        entity_id,
+                        to_x,
+                        to_y,
+                        ..
+                    } => {
+                        entities_wire.push(EntityStateWire {
+                            id: entity_id.0,
+                            x: (*to_x / 1000) as i32,
+                            y: (*to_y / 1000) as i32,
+                            entity_type: "player".into(),
+                            hp: Some(100),
+                            max_hp: Some(100),
+                            name: Some("Entity".into()),
+                        });
+                    }
+                    simulation_core::event::SimulationEvent::NpcDecisionExecuted {
+                        entity_id,
+                        tick,
+                    } => {
+                        entities_wire.push(EntityStateWire {
+                            id: entity_id.0,
+                            x: 32,
+                            y: 32,
+                            entity_type: "npc".into(),
+                            hp: Some(100),
+                            max_hp: Some(100),
+                            name: Some(format!("NPC-tick-{}", tick)),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            if !entities_wire.is_empty() {
+                replicator.broadcast_tick(tick_output.tick, &entities_wire);
             }
         }
     });
@@ -172,6 +245,7 @@ async fn static_file_handler(
             );
         }
 
+        #[allow(clippy::collapsible_if)]
         if canonical_target.is_file() {
             if let Ok(bytes) = std::fs::read(&canonical_target) {
                 let ext = canonical_target

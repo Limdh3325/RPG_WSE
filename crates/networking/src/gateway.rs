@@ -43,6 +43,8 @@ pub struct InboundCommand {
 }
 
 use crate::simulation::SettlementSimulation;
+use simulation_core::command::{CommandEnvelope, CommandPayload};
+use simulation_core::coordinator::{RegionCoordinator, RouteError};
 
 #[derive(Clone)]
 pub struct GatewayState {
@@ -51,6 +53,7 @@ pub struct GatewayState {
     pub command_sender: Option<mpsc::Sender<InboundCommand>>,
     pub prologue_manager: Arc<Mutex<PrologueManager>>,
     pub simulation: Option<Arc<SettlementSimulation>>,
+    pub coordinator: Option<Arc<RegionCoordinator>>,
     pub metrics: Arc<WseMetricsRegistry>,
     pub is_draining: Arc<AtomicBool>,
     pub admin_token: Arc<RwLock<Option<String>>>,
@@ -75,6 +78,7 @@ impl GatewayState {
             command_sender,
             prologue_manager: Arc::new(Mutex::new(prologue_manager)),
             simulation: None,
+            coordinator: None,
             metrics: Arc::new(WseMetricsRegistry::global().clone()),
             is_draining: Arc::new(AtomicBool::new(false)),
             admin_token: Arc::new(RwLock::new(std::env::var("WSE_ADMIN_TOKEN").ok())),
@@ -104,6 +108,11 @@ impl GatewayState {
 
     pub fn with_simulation(mut self, simulation: Arc<SettlementSimulation>) -> Self {
         self.simulation = Some(simulation);
+        self
+    }
+
+    pub fn with_coordinator(mut self, coordinator: Arc<RegionCoordinator>) -> Self {
+        self.coordinator = Some(coordinator);
         self
     }
 
@@ -447,6 +456,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<GatewayState>) {
         let _ = ws_sender.close().await;
     });
 
+    #[allow(clippy::collapsible_if)]
     if let Some(ref sim) = state.simulation {
         if sim.region_id == effective_region_id {
             sim.register_player(ticket_data.actor_id, None);
@@ -542,8 +552,97 @@ async fn handle_socket(socket: WebSocket, state: Arc<GatewayState>) {
                     continue;
                 }
 
-                // Dispatch to engine simulation or command channel if configured
-                if let Some(ref sim) = state.simulation {
+                // Dispatch to RegionCoordinator, engine simulation, or command channel
+                if let Some(ref coord) = state.coordinator {
+                    let cmd_payload = match payload {
+                        WireCommandPayload::Move { target_x, target_y } => {
+                            CommandPayload::Move { target_x, target_y }
+                        }
+                        WireCommandPayload::SetVelocity { dx, dy } => {
+                            CommandPayload::SetVelocity { dx, dy }
+                        }
+                        WireCommandPayload::Attack { target_id } => {
+                            CommandPayload::Attack {
+                                target_id: game_domain::EntityId(target_id),
+                            }
+                        }
+                        WireCommandPayload::Purchase { item_id, price } => {
+                            CommandPayload::Purchase { item_id, price }
+                        }
+                        WireCommandPayload::Custom { action, payload } => {
+                            CommandPayload::Custom { action, payload }
+                        }
+                        WireCommandPayload::Noop => CommandPayload::Noop,
+                    };
+
+                    let region_id = game_domain::RegionId(session.region_id());
+                    let envelope = CommandEnvelope::new(
+                        game_domain::CommandId(command_id),
+                        game_domain::EntityId(actor_id),
+                        region_id,
+                        game_domain::SessionId(session_id),
+                        1,
+                        0,
+                        0,
+                        1,
+                        cmd_payload,
+                    );
+
+                    match coord.route_command(envelope) {
+                        Ok(()) => {
+                            let _ = session.send_nonblocking(ServerMessage::CommandStatus {
+                                command_id,
+                                status: WireCommandStatus::Accepted,
+                                reason: None,
+                                committed_event_seq: None,
+                            });
+                        }
+                        Err(RouteError::ServerBusy { .. }) => {
+                            state
+                                .metrics
+                                .record_command_rejection(&region_str, "server_busy");
+                            let _ = session.send_nonblocking(ServerMessage::CommandStatus {
+                                command_id,
+                                status: WireCommandStatus::Rejected,
+                                reason: Some("Server busy".into()),
+                                committed_event_seq: None,
+                            });
+                        }
+                        Err(RouteError::UnknownRegion(_)) => {
+                            state
+                                .metrics
+                                .record_command_rejection(&region_str, "unknown_region");
+                            let _ = session.send_nonblocking(ServerMessage::CommandStatus {
+                                command_id,
+                                status: WireCommandStatus::Rejected,
+                                reason: Some("Unknown region".into()),
+                                committed_event_seq: None,
+                            });
+                        }
+                        Err(RouteError::RegionStopped(_)) => {
+                            state
+                                .metrics
+                                .record_command_rejection(&region_str, "region_stopped");
+                            let _ = session.send_nonblocking(ServerMessage::CommandStatus {
+                                command_id,
+                                status: WireCommandStatus::Rejected,
+                                reason: Some("Region stopped".into()),
+                                committed_event_seq: None,
+                            });
+                        }
+                        Err(RouteError::EpochMismatch { .. }) => {
+                            state
+                                .metrics
+                                .record_command_rejection(&region_str, "epoch_mismatch");
+                            let _ = session.send_nonblocking(ServerMessage::CommandStatus {
+                                command_id,
+                                status: WireCommandStatus::Rejected,
+                                reason: Some("Epoch mismatch".into()),
+                                committed_event_seq: None,
+                            });
+                        }
+                    }
+                } else if let Some(ref sim) = state.simulation {
                     let cmd = InboundCommand {
                         session_id,
                         command_id,

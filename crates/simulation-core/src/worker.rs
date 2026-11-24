@@ -131,6 +131,7 @@ pub struct RegionWorker {
     ack_rx: Receiver<PersistenceAck>,
     command_rx: Receiver<CommandEnvelope>,
     event_tx: Option<Sender<TickOutput>>,
+    hooks: Box<dyn crate::hook::SimulationPhaseHooks>,
     tick_interval: Duration,
     lag_threshold: Duration,
     test_tick_delay: Duration,
@@ -187,6 +188,7 @@ impl RegionWorker {
             ack_rx,
             command_rx: cmd_rx,
             event_tx,
+            hooks: Box::new(crate::hook::NoopSimulationHooks),
             tick_interval: Duration::from_millis(DEFAULT_TICK_INTERVAL_MS),
             lag_threshold: Duration::from_millis(LAG_THRESHOLD_MS),
             test_tick_delay: Duration::ZERO,
@@ -211,6 +213,11 @@ impl RegionWorker {
     /// Direct access to inner simulation engine (for testing / initial population).
     pub fn engine_mut(&mut self) -> &mut SimulationEngine {
         &mut self.engine
+    }
+
+    /// Sets simulation phase hooks (e.g. integrated AI, economy, and dynamic event systems).
+    pub fn set_hooks(&mut self, hooks: Box<dyn crate::hook::SimulationPhaseHooks>) {
+        self.hooks = hooks;
     }
 
     /// Sets custom tick interval (useful for faster deterministic testing).
@@ -269,7 +276,7 @@ impl RegionWorker {
             if self.test_tick_delay > Duration::ZERO {
                 std::thread::sleep(self.test_tick_delay);
             }
-            match self.engine.step() {
+            match self.engine.step_with_hooks(&mut *self.hooks) {
                 Ok(output) => {
                     let step_duration = step_start.elapsed();
                     let step_duration_ms = step_duration.as_millis() as u64;

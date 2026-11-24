@@ -259,7 +259,7 @@ impl SimulationEngine {
     /// Advances the simulation by exactly one tick using custom phase hooks, tracking telemetry.
     pub fn step_with_hooks(
         &mut self,
-        hooks: &mut impl crate::hook::SimulationPhaseHooks,
+        hooks: &mut (impl crate::hook::SimulationPhaseHooks + ?Sized),
     ) -> Result<TickOutput, DomainError> {
         let start = Instant::now();
         let output = self.step_core(hooks)?;
@@ -290,7 +290,7 @@ impl SimulationEngine {
     /// Executes the 10 canonical simulation phases sequentially.
     fn step_core(
         &mut self,
-        hooks: &mut impl crate::hook::SimulationPhaseHooks,
+        hooks: &mut (impl crate::hook::SimulationPhaseHooks + ?Sized),
     ) -> Result<TickOutput, DomainError> {
         let current_tick = self.clock.advance_tick();
         self.world.meta.tick = current_tick;
