@@ -1,10 +1,14 @@
 use clap::Parser;
+use ecs_components::components::{CombatStats, Health, Needs, Personality, Position};
 use ecs_components::region_world::RegionWorld;
-use game_domain::id::RegionId;
+use game_domain::id::{EntityId, RegionId, SessionId};
 use simulation_core::engine::SimulationEngine;
-use simulation_systems::economy::{FoodLedger, SettlementEconomy};
-use simulation_systems::event_chain::CaravanEventChain;
+use simulation_systems::economy::SettlementEconomy;
 use simulation_systems::faction::FactionManager;
+use simulation_systems::integrated_hooks::IntegratedSimulationHooks;
+use simulation_systems::rule_dsl::DynamicRuleRegistry;
+use simulation_systems::scheduler::NpcScheduler;
+use simulation_systems::system::NpcAiSystem;
 
 #[derive(Parser)]
 #[command(
@@ -39,47 +43,34 @@ fn main() -> std::process::ExitCode {
     }
 
     let region_id = RegionId::from_u128(1);
-    let world = RegionWorld::new_default_64x64(region_id, 1);
+    let mut world = RegionWorld::new_default_64x64(region_id, 1);
+
+    // Bootstrap initial pioneer settlement NPCs (villager & merchant) for the integrated simulation
+    let villager_id = EntityId::from_u128(101);
+    let villager_entity = world.world.spawn((
+        Position { x_millitile: 32_000, y_millitile: 32_000 },
+        Health::new(100, 100).expect("valid health"),
+        CombatStats::new(1000, 10, 2, 5),
+        Personality::default(),
+        Needs::new(100, 100, 1000),
+    )).id();
+    let _ = world.index.insert(villager_id, villager_entity);
+
     let mut engine = SimulationEngine::new(world, args.seed);
 
-    match engine.run_ticks(args.ticks) {
+    let session_id = SessionId::from_u128(args.seed as u128);
+    let mut hooks = IntegratedSimulationHooks::new(
+        NpcAiSystem::default(),
+        NpcScheduler::default(),
+        SettlementEconomy::new_default(1),
+        FactionManager::default(),
+        DynamicRuleRegistry::default(),
+        session_id,
+        region_id,
+    );
+
+    match engine.run_ticks_with_hooks(args.ticks, &mut hooks) {
         Ok(summary) => {
-            // Run settlement economy and dynamic event chains alongside ticks
-            let mut settlement = SettlementEconomy::new_default(1);
-            let mut ledger = FoodLedger::new();
-            let mut faction_mgr = FactionManager::new();
-            let mut active_caravan: Option<CaravanEventChain> = None;
-            let mut total_economy_events = 0usize;
-
-            for tick in 1..=args.ticks {
-                let eco_events = settlement.step_economy(tick, 100, &mut ledger);
-                total_economy_events += eco_events.len();
-
-                if settlement.shortage_active && active_caravan.is_none() {
-                    active_caravan = Some(CaravanEventChain::new_shortage_request(
-                        format!("caravan-{}", tick),
-                        settlement.settlement_id,
-                        tick,
-                        50,
-                    ));
-                }
-
-                if let Some(mut caravan) = active_caravan.take() {
-                    let chain_events = caravan.step(
-                        tick,
-                        &mut settlement,
-                        &mut faction_mgr,
-                        &mut ledger,
-                        None,
-                        None,
-                    );
-                    total_economy_events += chain_events.len();
-                    if caravan.is_active() {
-                        active_caravan = Some(caravan);
-                    }
-                }
-            }
-
             println!(
                 "{}",
                 serde_json::json!({
@@ -88,15 +79,15 @@ fn main() -> std::process::ExitCode {
                     "requested_ticks": args.ticks,
                     "executed_ticks": summary.total_ticks_executed,
                     "final_state_hash": summary.final_state_hash,
-                    "total_events_emitted": summary.total_events_emitted + total_economy_events,
+                    "total_events_emitted": summary.total_events_emitted,
                     "economy": {
-                        "settlement_id": settlement.settlement_id,
-                        "food_stock": settlement.food_stock,
-                        "current_price": settlement.current_price,
-                        "security_index": settlement.security_index,
-                        "shortage_active": settlement.shortage_active,
-                        "ledger_conservation_valid": ledger.audit_conservation(),
-                        "ledger_entries_count": ledger.entries().len()
+                        "settlement_id": hooks.economy.settlement_id,
+                        "food_stock": hooks.economy.food_stock,
+                        "current_price": hooks.economy.current_price,
+                        "security_index": hooks.economy.security_index,
+                        "shortage_active": hooks.economy.shortage_active,
+                        "ledger_conservation_valid": hooks.food_ledger.audit_conservation(),
+                        "ledger_entries_count": hooks.food_ledger.entries().len()
                     },
                     "simulation_available": true,
                     "status": "completed"

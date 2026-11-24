@@ -6,6 +6,7 @@ pub mod economy;
 pub mod event_chain;
 pub mod faction;
 pub mod goap;
+pub mod integrated_hooks;
 pub mod llm_boundary;
 pub mod memory;
 pub mod needs;
@@ -22,6 +23,7 @@ pub use event_chain::{
 };
 pub use faction::{FactionId, FactionManager, FactionTier};
 pub use goap::{GoapActionId, GoapGoal, GoapPlanner, GoapPlannerConfig, GoapState};
+pub use integrated_hooks::IntegratedSimulationHooks;
 pub use llm_boundary::{
     AuthoritativeItemRegistry, LlmItemGrantProposal, LlmSecurityViolation, validate_and_grant_item,
 };
