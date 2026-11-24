@@ -5,12 +5,15 @@ use crate::session::{
 use crate::ticket::{DEFAULT_TICKET_TTL, TicketStore};
 use axum::Json;
 use axum::Router;
-use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::http::header::CONTENT_TYPE;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use futures_util::{SinkExt, StreamExt};
+use observability::WseMetricsRegistry;
+use serde::{Deserialize, Serialize};
 use shared_protocol::{
     ClientMessage, PROTOCOL_VERSION, PrologueRewardWire, ServerMessage, WireCommandPayload,
     WireCommandStatus, WsTicketRequest, WsTicketResponse,
@@ -47,6 +50,7 @@ pub struct GatewayState {
     pub command_sender: Option<mpsc::Sender<InboundCommand>>,
     pub prologue_manager: Arc<Mutex<PrologueManager>>,
     pub simulation: Option<Arc<SettlementSimulation>>,
+    pub metrics: Arc<WseMetricsRegistry>,
 }
 
 impl GatewayState {
@@ -68,7 +72,13 @@ impl GatewayState {
             command_sender,
             prologue_manager: Arc::new(Mutex::new(prologue_manager)),
             simulation: None,
+            metrics: Arc::new(WseMetricsRegistry::global().clone()),
         }
+    }
+
+    pub fn with_metrics(mut self, metrics: Arc<WseMetricsRegistry>) -> Self {
+        self.metrics = metrics;
+        self
     }
 
     pub fn with_simulation(mut self, simulation: Arc<SettlementSimulation>) -> Self {
@@ -105,11 +115,69 @@ impl Default for GatewayState {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegionStatusResponse {
+    pub region_id: Uuid,
+    pub epoch: u64,
+    pub last_tick: u64,
+    pub is_active: bool,
+    pub subscriber_count: usize,
+    pub entity_count: usize,
+}
+
 pub fn create_gateway_router(state: Arc<GatewayState>) -> Router {
     Router::new()
         .route("/api/v1/ws-tickets", post(issue_ticket_handler))
+        .route("/api/v1/regions/{id}/status", get(region_status_handler))
+        .route("/metrics", get(metrics_handler))
         .route("/ws", get(ws_upgrade_handler))
         .with_state(state)
+}
+
+async fn metrics_handler(State(state): State<Arc<GatewayState>>) -> impl IntoResponse {
+    let body = state.metrics.render_prometheus_text();
+    (
+        StatusCode::OK,
+        [(CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        body,
+    )
+}
+
+async fn region_status_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(region_id): Path<Uuid>,
+) -> Result<Json<RegionStatusResponse>, (StatusCode, String)> {
+    let replicator = state.get_or_create_replicator(region_id);
+    let subscriber_count = replicator.session_count();
+    let epoch = 1u64;
+    let last_tick = if let Some(sim) = &state.simulation {
+        if sim.region_id == region_id {
+            sim.current_tick()
+        } else {
+            replicator.world_revision()
+        }
+    } else {
+        replicator.world_revision()
+    };
+
+    let entity_count = if let Some(sim) = &state.simulation {
+        if sim.region_id == region_id {
+            sim.entity_count()
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    Ok(Json(RegionStatusResponse {
+        region_id,
+        epoch,
+        last_tick,
+        is_active: subscriber_count > 0 || entity_count > 0,
+        subscriber_count,
+        entity_count,
+    }))
 }
 
 async fn issue_ticket_handler(
@@ -323,6 +391,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<GatewayState>) {
             }
             ClientMessage::ResyncRequest { reason, .. } => {
                 debug!(%session_id, %reason, "Client requested resync");
+                state.metrics.record_client_resync(&reason);
                 if let Some(ref sim) = state.simulation {
                     let entities = sim.get_all_entities();
                     let current_tick = sim.current_tick();
@@ -336,8 +405,12 @@ async fn handle_socket(socket: WebSocket, state: Arc<GatewayState>) {
                 actor_id,
                 payload,
             } => {
+                let region_str = session.region_id().to_string();
                 // Rate limiter check
                 if !rate_limiter.check_and_record() {
+                    state
+                        .metrics
+                        .record_command_rejection(&region_str, "rate_limited");
                     let _ = session.send_nonblocking(ServerMessage::CommandStatus {
                         command_id,
                         status: WireCommandStatus::Rejected,
@@ -349,6 +422,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<GatewayState>) {
 
                 // Security check: actor_id verification (TEST-NET-004)
                 if actor_id != session.actor_id {
+                    state
+                        .metrics
+                        .record_command_rejection(&region_str, "auth_mismatch");
                     warn!(
                         %session_id,
                         session_actor = %session.actor_id,
@@ -384,6 +460,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<GatewayState>) {
                         payload,
                     };
                     if let Err(e) = tx.try_send(cmd) {
+                        state
+                            .metrics
+                            .record_command_rejection(&region_str, "queue_full");
                         warn!(%session_id, ?e, "Inbound command queue full or dropped");
                         let _ = session.send_nonblocking(ServerMessage::CommandStatus {
                             command_id,
@@ -446,7 +525,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<GatewayState>) {
                         resource_type: target_id.unwrap_or_else(|| "wild_herbs".to_string()),
                         amount: 1,
                     },
-                    "waypoint" | "reach_waypoint" => PrologueAction::ReachWaypoint { x: 100, y: 100 },
+                    "waypoint" | "reach_waypoint" => {
+                        PrologueAction::ReachWaypoint { x: 100, y: 100 }
+                    }
                     "defeat" | "defeat_encounter" => PrologueAction::DefeatEncounter {
                         target_id: target_id.unwrap_or_else(|| "goblin_scout".to_string()),
                     },
@@ -483,10 +564,14 @@ async fn handle_socket(socket: WebSocket, state: Arc<GatewayState>) {
                     || reason_lower.contains("defeat")
                     || reason_lower.contains("advance")
                 {
-                    if let Err(e) = manager.trigger_npc_casualty_fallback(session.actor_id, &reason, now_ms) {
+                    if let Err(e) =
+                        manager.trigger_npc_casualty_fallback(session.actor_id, &reason, now_ms)
+                    {
                         warn!(%session_id, ?e, "Failed to trigger prologue combat/casualty fallback");
                     }
-                } else if let Err(e) = manager.report_movement_failure(session.actor_id, &reason, now_ms) {
+                } else if let Err(e) =
+                    manager.report_movement_failure(session.actor_id, &reason, now_ms)
+                {
                     warn!(%session_id, ?e, "Failed to report prologue movement failure");
                 }
                 let sync = make_prologue_sync_message(&manager, &session.actor_id);

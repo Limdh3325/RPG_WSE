@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["apps/game-server", "apps/simulation-runner", "crates/game-domain", "crates/ecs-components", "crates/simulation-core", "crates/simulation-systems", "crates/persistence", "crates/networking", "crates/shared-protocol"]
+members = ["apps/game-server", "apps/simulation-runner", "crates/game-domain", "crates/ecs-components", "crates/simulation-core", "crates/simulation-systems", "crates/persistence", "crates/networking", "crates/shared-protocol", "crates/observability"]
 
 [workspace.package]
 version = "0.1.0"
@@ -30,3 +30,7 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "warn"
+
+[profile.test]
+opt-level = 1
+

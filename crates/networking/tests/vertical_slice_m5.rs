@@ -2,14 +2,11 @@ use networking::gateway::InboundCommand;
 use networking::replicator::RegionReplicator;
 use networking::session::Session;
 use networking::simulation::{
-    SettlementSimulation, BANDIT_KAGE_ID, BANDIT_SCAR_ID, CARAVAN_CART_ID,
-    DEFAULT_SETTLEMENT_REGION_ID, ELDER_ELDA_ID, FARMER_CORIN_ID, FARMER_DELIA_ID,
-    GUARD_AELYN_ID, GUARD_ROLAND_ID, GUARD_VARICK_ID, MERCHANT_BORIN_ID, MERCHANT_LUCAS_ID,
-    TRAINING_DUMMY_ID, WILD_BOAR_ID,
+    BANDIT_KAGE_ID, BANDIT_SCAR_ID, CARAVAN_CART_ID, DEFAULT_SETTLEMENT_REGION_ID, ELDER_ELDA_ID,
+    FARMER_CORIN_ID, FARMER_DELIA_ID, GUARD_AELYN_ID, GUARD_ROLAND_ID, GUARD_VARICK_ID,
+    MERCHANT_BORIN_ID, MERCHANT_LUCAS_ID, SettlementSimulation, TRAINING_DUMMY_ID, WILD_BOAR_ID,
 };
-use shared_protocol::{
-    EntityStateWire, ServerMessage, WireCommandPayload, WireCommandStatus,
-};
+use shared_protocol::{EntityStateWire, ServerMessage, WireCommandPayload, WireCommandStatus};
 use simulation_systems::event_chain::{CaravanEventChain, CaravanPhase};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -59,18 +56,39 @@ async fn test_m5_npc_and_monster_vertical_slice_population() {
 
     // Verify all 10 NPCs
     assert!(entity_ids.contains(&ELDER_ELDA_ID), "Elder Elda missing");
-    assert!(entity_ids.contains(&MERCHANT_BORIN_ID), "Merchant Borin missing");
-    assert!(entity_ids.contains(&MERCHANT_LUCAS_ID), "Merchant Lucas missing");
-    assert!(entity_ids.contains(&FARMER_CORIN_ID), "Farmer Corin missing");
-    assert!(entity_ids.contains(&FARMER_DELIA_ID), "Farmer Delia missing");
-    assert!(entity_ids.contains(&GUARD_VARICK_ID), "Guard Varick missing");
-    assert!(entity_ids.contains(&GUARD_ROLAND_ID), "Guard Roland missing");
+    assert!(
+        entity_ids.contains(&MERCHANT_BORIN_ID),
+        "Merchant Borin missing"
+    );
+    assert!(
+        entity_ids.contains(&MERCHANT_LUCAS_ID),
+        "Merchant Lucas missing"
+    );
+    assert!(
+        entity_ids.contains(&FARMER_CORIN_ID),
+        "Farmer Corin missing"
+    );
+    assert!(
+        entity_ids.contains(&FARMER_DELIA_ID),
+        "Farmer Delia missing"
+    );
+    assert!(
+        entity_ids.contains(&GUARD_VARICK_ID),
+        "Guard Varick missing"
+    );
+    assert!(
+        entity_ids.contains(&GUARD_ROLAND_ID),
+        "Guard Roland missing"
+    );
     assert!(entity_ids.contains(&GUARD_AELYN_ID), "Guard Aelyn missing");
     assert!(entity_ids.contains(&BANDIT_KAGE_ID), "Bandit Kage missing");
     assert!(entity_ids.contains(&BANDIT_SCAR_ID), "Bandit Scar missing");
 
     // Verify 2 Monsters
-    assert!(entity_ids.contains(&TRAINING_DUMMY_ID), "Training Dummy missing");
+    assert!(
+        entity_ids.contains(&TRAINING_DUMMY_ID),
+        "Training Dummy missing"
+    );
     assert!(entity_ids.contains(&WILD_BOAR_ID), "Wild Boar missing");
 }
 
@@ -128,7 +146,10 @@ async fn test_m5_e2e_001_and_002_food_shortage_threshold_and_no_duplicates() {
         let caravan = sim.active_caravan.read().unwrap();
         if caravan.is_some() { 1 } else { 0 }
     };
-    assert_eq!(caravan_count, 1, "There must never be duplicate caravan events for a single ongoing shortage");
+    assert_eq!(
+        caravan_count, 1,
+        "There must never be duplicate caravan events for a single ongoing shortage"
+    );
 }
 
 #[tokio::test]
@@ -230,7 +251,10 @@ async fn test_m5_e2e_004_caravan_escort_replenishes_food_and_stock() {
 
     // Verify food stock replenished (+50), shortage cleared, and market food stock replenished
     let eco = sim.economy.read().unwrap();
-    assert_eq!(eco.food_stock, 70, "Food stock should increase by delivered amount (+50)");
+    assert_eq!(
+        eco.food_stock, 70,
+        "Food stock should increase by delivered amount (+50)"
+    );
     assert!(!eco.shortage_active, "Shortage flag must be cleared");
 
     let market_stock = *sim.market_food_stock.read().unwrap();
@@ -345,7 +369,16 @@ async fn test_m5_e2e_006_atomic_purchase_competition_no_double_spend() {
     let purchase_ops: Vec<_> = ledger
         .entries()
         .iter()
-        .filter(|e| matches!(e.op, simulation_systems::economy::FoodLedgerOp::Purchase { .. }))
+        .filter(|e| {
+            matches!(
+                e.op,
+                simulation_systems::economy::FoodLedgerOp::Purchase { .. }
+            )
+        })
         .collect();
-    assert_eq!(purchase_ops.len(), 1, "Exactly one purchase must be recorded in the ledger");
+    assert_eq!(
+        purchase_ops.len(),
+        1,
+        "Exactly one purchase must be recorded in the ledger"
+    );
 }

@@ -1,22 +1,29 @@
-use std::sync::Arc;
-use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use shared_protocol::{ClientMessage, ServerMessage};
 use simulation_systems::prologue::{FilePrologueStorage, PrologueManager, PrologueState};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use uuid::Uuid;
 
-use networking::gateway::{create_gateway_router, GatewayState, DEFAULT_SHARED_SETTLEMENT_REGION_ID};
+use networking::gateway::{
+    DEFAULT_SHARED_SETTLEMENT_REGION_ID, GatewayState, create_gateway_router,
+};
 
-async fn setup_test_server(custom_data_dir: Option<std::path::PathBuf>) -> (String, Arc<GatewayState>) {
+async fn setup_test_server(
+    custom_data_dir: Option<std::path::PathBuf>,
+) -> (String, Arc<GatewayState>) {
     let state = match custom_data_dir {
         Some(dir) => {
             std::fs::create_dir_all(&dir).unwrap();
             let storage = FilePrologueStorage::new(&dir).unwrap();
             let manager = PrologueManager::try_new_with_storage(Arc::new(storage)).unwrap();
-            Arc::new(GatewayState::new(None).with_prologue_manager(Arc::new(std::sync::Mutex::new(manager))))
+            Arc::new(
+                GatewayState::new(None)
+                    .with_prologue_manager(Arc::new(std::sync::Mutex::new(manager))),
+            )
         }
         None => Arc::new(GatewayState::new(None)),
     };
@@ -26,7 +33,9 @@ async fn setup_test_server(custom_data_dir: Option<std::path::PathBuf>) -> (Stri
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service()).await.unwrap();
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
     });
 
     (format!("ws://127.0.0.1:{}/ws", addr.port()), state)
@@ -42,22 +51,25 @@ async fn connect_and_auth(
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     Uuid,
 ) {
-    let (ticket, _) = state.ticket_store.issue_ticket(
-        account_id,
-        actor_id,
-        region_id,
-        Duration::from_secs(60),
-    );
+    let (ticket, _) =
+        state
+            .ticket_store
+            .issue_ticket(account_id, actor_id, region_id, Duration::from_secs(60));
 
     let (mut ws, _) = connect_async(ws_url).await.unwrap();
     let auth_msg = ClientMessage::Auth { ticket };
-    ws.send(Message::Text(serde_json::to_string(&auth_msg).unwrap().into()))
-        .await
-        .unwrap();
+    ws.send(Message::Text(
+        serde_json::to_string(&auth_msg).unwrap().into(),
+    ))
+    .await
+    .unwrap();
 
     let mut effective_region = region_id;
     while let Some(Ok(Message::Text(txt))) = ws.next().await {
-        if let Ok(ServerMessage::AuthOk { region_id: r_id, .. }) = serde_json::from_str(&txt) {
+        if let Ok(ServerMessage::AuthOk {
+            region_id: r_id, ..
+        }) = serde_json::from_str(&txt)
+        {
             effective_region = r_id;
             break;
         }
@@ -67,7 +79,9 @@ async fn connect_and_auth(
 }
 
 async fn wait_for_sync<F>(
-    ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
     predicate: F,
 ) -> (String, String, bool, bool)
 where
@@ -103,22 +117,34 @@ async fn test_m6_pro_001_full_prologue_flow_to_world_transfer() {
     let actor_id = Uuid::new_v4();
     let private_region_id = Uuid::new_v4();
 
-    let (mut ws, region) = connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
+    let (mut ws, region) =
+        connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
     assert_eq!(region, private_region_id);
 
     // 1. Query State -> NOT_STARTED
-    ws.send(Message::Text(serde_json::to_string(&ClientMessage::PrologueQueryState).unwrap().into()))
-        .await
-        .unwrap();
+    ws.send(Message::Text(
+        serde_json::to_string(&ClientMessage::PrologueQueryState)
+            .unwrap()
+            .into(),
+    ))
+    .await
+    .unwrap();
     let (s, _, _, is_completed) = wait_for_sync(&mut ws, |st, _| st == "NOT_STARTED").await;
     assert_eq!(s, "NOT_STARTED");
     assert!(!is_completed);
 
     // 2. Start -> P0VillageEntry
-    ws.send(Message::Text(serde_json::to_string(&ClientMessage::PrologueStart).unwrap().into()))
-        .await
-        .unwrap();
-    let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| st == "IN_PROGRESS" && sp == "P0VillageEntry").await;
+    ws.send(Message::Text(
+        serde_json::to_string(&ClientMessage::PrologueStart)
+            .unwrap()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| {
+        st == "IN_PROGRESS" && sp == "P0VillageEntry"
+    })
+    .await;
     assert_eq!(s, "IN_PROGRESS");
     assert_eq!(step, "P0VillageEntry");
 
@@ -134,7 +160,10 @@ async fn test_m6_pro_001_full_prologue_flow_to_world_transfer() {
     ))
     .await
     .unwrap();
-    let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| st == "IN_PROGRESS" && sp == "P1ResourceGathering").await;
+    let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| {
+        st == "IN_PROGRESS" && sp == "P1ResourceGathering"
+    })
+    .await;
     assert_eq!(s, "IN_PROGRESS");
     assert_eq!(step, "P1ResourceGathering");
 
@@ -152,7 +181,10 @@ async fn test_m6_pro_001_full_prologue_flow_to_world_transfer() {
         .await
         .unwrap();
     }
-    let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| st == "IN_PROGRESS" && sp == "P2OutpostTravel").await;
+    let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| {
+        st == "IN_PROGRESS" && sp == "P2OutpostTravel"
+    })
+    .await;
     assert_eq!(s, "IN_PROGRESS");
     assert_eq!(step, "P2OutpostTravel");
 
@@ -168,7 +200,10 @@ async fn test_m6_pro_001_full_prologue_flow_to_world_transfer() {
     ))
     .await
     .unwrap();
-    let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| st == "IN_PROGRESS" && sp == "P3RescueCombat").await;
+    let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| {
+        st == "IN_PROGRESS" && sp == "P3RescueCombat"
+    })
+    .await;
     assert_eq!(s, "IN_PROGRESS");
     assert_eq!(step, "P3RescueCombat");
 
@@ -184,7 +219,10 @@ async fn test_m6_pro_001_full_prologue_flow_to_world_transfer() {
     ))
     .await
     .unwrap();
-    let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| st == "IN_PROGRESS" && sp == "P4SupplyMigration").await;
+    let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| {
+        st == "IN_PROGRESS" && sp == "P4SupplyMigration"
+    })
+    .await;
     assert_eq!(s, "IN_PROGRESS");
     assert_eq!(step, "P4SupplyMigration");
 
@@ -200,7 +238,10 @@ async fn test_m6_pro_001_full_prologue_flow_to_world_transfer() {
     ))
     .await
     .unwrap();
-    let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| st == "IN_PROGRESS" && sp == "P5SharedSettlement").await;
+    let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| {
+        st == "IN_PROGRESS" && sp == "P5SharedSettlement"
+    })
+    .await;
     assert_eq!(s, "IN_PROGRESS");
     assert_eq!(step, "P5SharedSettlement");
 
@@ -271,11 +312,19 @@ async fn test_m6_pro_002_disconnect_recovery_all_steps() {
 
     // Connect, start, advance to P1
     {
-        let (mut ws, _) = connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
-        ws.send(Message::Text(serde_json::to_string(&ClientMessage::PrologueStart).unwrap().into()))
-            .await
-            .unwrap();
-        wait_for_sync(&mut ws, |st, sp| st == "IN_PROGRESS" && sp == "P0VillageEntry").await;
+        let (mut ws, _) =
+            connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
+        ws.send(Message::Text(
+            serde_json::to_string(&ClientMessage::PrologueStart)
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        wait_for_sync(&mut ws, |st, sp| {
+            st == "IN_PROGRESS" && sp == "P0VillageEntry"
+        })
+        .await;
 
         ws.send(Message::Text(
             serde_json::to_string(&ClientMessage::PrologueStepAction {
@@ -288,7 +337,10 @@ async fn test_m6_pro_002_disconnect_recovery_all_steps() {
         ))
         .await
         .unwrap();
-        let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| st == "IN_PROGRESS" && sp == "P1ResourceGathering").await;
+        let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| {
+            st == "IN_PROGRESS" && sp == "P1ResourceGathering"
+        })
+        .await;
         assert_eq!(s, "IN_PROGRESS");
         assert_eq!(step, "P1ResourceGathering");
         // Drop WebSocket abruptly simulating disconnection
@@ -296,11 +348,19 @@ async fn test_m6_pro_002_disconnect_recovery_all_steps() {
 
     // Reconnect with new session ticket
     {
-        let (mut ws, _) = connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
-        ws.send(Message::Text(serde_json::to_string(&ClientMessage::PrologueQueryState).unwrap().into()))
-            .await
-            .unwrap();
-        let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| st == "IN_PROGRESS" && sp == "P1ResourceGathering").await;
+        let (mut ws, _) =
+            connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
+        ws.send(Message::Text(
+            serde_json::to_string(&ClientMessage::PrologueQueryState)
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| {
+            st == "IN_PROGRESS" && sp == "P1ResourceGathering"
+        })
+        .await;
         assert_eq!(s, "IN_PROGRESS");
         assert_eq!(step, "P1ResourceGathering");
     }
@@ -317,14 +377,19 @@ async fn test_m6_pro_003_idempotent_100_transfer_retries() {
     let actor_id = Uuid::new_v4();
     let private_region_id = Uuid::new_v4();
 
-    let (mut ws, _) = connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
+    let (mut ws, _) =
+        connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
 
     // Fast setup directly into ReadyToTransfer state (6 fallback advances from P0 to ReadyToTransfer)
     {
         let mut manager = state.prologue_manager.lock().unwrap();
-        manager.start_prologue(actor_id, private_region_id, 0).unwrap();
+        manager
+            .start_prologue(actor_id, private_region_id, 0)
+            .unwrap();
         for _ in 0..6 {
-            manager.trigger_npc_casualty_fallback(actor_id, "test_fast_forward", 0).unwrap();
+            manager
+                .trigger_npc_casualty_fallback(actor_id, "test_fast_forward", 0)
+                .unwrap();
         }
         let state = manager.get_state(&actor_id);
         assert!(matches!(state, PrologueState::ReadyToTransfer { .. }));
@@ -349,7 +414,9 @@ async fn test_m6_pro_003_idempotent_100_transfer_retries() {
         if let Ok(Some(Ok(Message::Text(txt)))) =
             tokio::time::timeout(Duration::from_millis(200), ws.next()).await
         {
-            if let Ok(ServerMessage::PrologueTransferResult { status, .. }) = serde_json::from_str(&txt) {
+            if let Ok(ServerMessage::PrologueTransferResult { status, .. }) =
+                serde_json::from_str(&txt)
+            {
                 if status == "COMMITTED" {
                     commit_seen = true;
                     break;
@@ -378,22 +445,33 @@ async fn test_m6_pro_004_completed_character_routes_to_settlement() {
     // Mark completed beforehand
     {
         let mut manager = state.prologue_manager.lock().unwrap();
-        manager.start_prologue(actor_id, private_region_id, 0).unwrap();
+        manager
+            .start_prologue(actor_id, private_region_id, 0)
+            .unwrap();
         for _ in 0..6 {
-            manager.trigger_npc_casualty_fallback(actor_id, "bypass", 0).unwrap();
+            manager
+                .trigger_npc_casualty_fallback(actor_id, "bypass", 0)
+                .unwrap();
         }
-        manager.transfer_to_shared_world(actor_id, DEFAULT_SHARED_SETTLEMENT_REGION_ID, 0).unwrap();
+        manager
+            .transfer_to_shared_world(actor_id, DEFAULT_SHARED_SETTLEMENT_REGION_ID, 0)
+            .unwrap();
         assert!(manager.is_completed(&actor_id));
     }
 
     // Connect with private_region_id ticket: AuthOk must route to DEFAULT_SHARED_SETTLEMENT_REGION_ID
-    let (mut ws, effective_region) = connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
+    let (mut ws, effective_region) =
+        connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
     assert_eq!(effective_region, DEFAULT_SHARED_SETTLEMENT_REGION_ID);
 
     // Query state must show is_completed = true
-    ws.send(Message::Text(serde_json::to_string(&ClientMessage::PrologueQueryState).unwrap().into()))
-        .await
-        .unwrap();
+    ws.send(Message::Text(
+        serde_json::to_string(&ClientMessage::PrologueQueryState)
+            .unwrap()
+            .into(),
+    ))
+    .await
+    .unwrap();
     let (s, _, _, is_completed) = wait_for_sync(&mut ws, |st, _| st == "COMPLETED").await;
     assert_eq!(s, "COMPLETED");
     assert!(is_completed);
@@ -410,12 +488,20 @@ async fn test_m6_pro_005_movement_failure_reports_within_5s() {
     let actor_id = Uuid::new_v4();
     let private_region_id = Uuid::new_v4();
 
-    let (mut ws, _) = connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
+    let (mut ws, _) =
+        connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
 
-    ws.send(Message::Text(serde_json::to_string(&ClientMessage::PrologueStart).unwrap().into()))
-        .await
-        .unwrap();
-    wait_for_sync(&mut ws, |st, sp| st == "IN_PROGRESS" && sp == "P0VillageEntry").await;
+    ws.send(Message::Text(
+        serde_json::to_string(&ClientMessage::PrologueStart)
+            .unwrap()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    wait_for_sync(&mut ws, |st, sp| {
+        st == "IN_PROGRESS" && sp == "P0VillageEntry"
+    })
+    .await;
 
     // Send movement failure report
     let start = std::time::Instant::now();
@@ -431,7 +517,10 @@ async fn test_m6_pro_005_movement_failure_reports_within_5s() {
 
     let (_, _, fallback_active, _) = wait_for_sync(&mut ws, |_, _| true).await;
     let elapsed = start.elapsed();
-    assert!(elapsed < Duration::from_secs(5), "Failure report must respond within 5s");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "Failure report must respond within 5s"
+    );
     assert!(fallback_active, "fallback_active must be set to true");
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -446,12 +535,20 @@ async fn test_m6_pro_006_combat_or_npc_death_fallback_path() {
     let actor_id = Uuid::new_v4();
     let private_region_id = Uuid::new_v4();
 
-    let (mut ws, _) = connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
+    let (mut ws, _) =
+        connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
 
-    ws.send(Message::Text(serde_json::to_string(&ClientMessage::PrologueStart).unwrap().into()))
-        .await
-        .unwrap();
-    wait_for_sync(&mut ws, |st, sp| st == "IN_PROGRESS" && sp == "P0VillageEntry").await;
+    ws.send(Message::Text(
+        serde_json::to_string(&ClientMessage::PrologueStart)
+            .unwrap()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    wait_for_sync(&mut ws, |st, sp| {
+        st == "IN_PROGRESS" && sp == "P0VillageEntry"
+    })
+    .await;
 
     // Trigger casualty/combat fallbacks across all steps (6 steps to reach ReadyToTransfer)
     for _ in 0..6 {
@@ -467,9 +564,13 @@ async fn test_m6_pro_006_combat_or_npc_death_fallback_path() {
     }
 
     // Now state should be READY_TO_TRANSFER
-    ws.send(Message::Text(serde_json::to_string(&ClientMessage::PrologueQueryState).unwrap().into()))
-        .await
-        .unwrap();
+    ws.send(Message::Text(
+        serde_json::to_string(&ClientMessage::PrologueQueryState)
+            .unwrap()
+            .into(),
+    ))
+    .await
+    .unwrap();
     let (s, _, _, _) = wait_for_sync(&mut ws, |st, _| st == "READY_TO_TRANSFER").await;
     assert_eq!(s, "READY_TO_TRANSFER");
 
@@ -489,7 +590,9 @@ async fn test_m6_pro_006_combat_or_npc_death_fallback_path() {
         if let Ok(Some(Ok(Message::Text(txt)))) =
             tokio::time::timeout(Duration::from_millis(500), ws.next()).await
         {
-            if let Ok(ServerMessage::PrologueTransferResult { status, .. }) = serde_json::from_str(&txt) {
+            if let Ok(ServerMessage::PrologueTransferResult { status, .. }) =
+                serde_json::from_str(&txt)
+            {
                 if status == "COMMITTED" {
                     committed = true;
                     break;
@@ -512,12 +615,20 @@ async fn test_m6_pro_007_file_storage_durability_across_gateway_restart() {
     // Run instance 1 and advance to P1
     {
         let (ws_url, state) = setup_test_server(Some(temp_dir.clone())).await;
-        let (mut ws, _) = connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
+        let (mut ws, _) =
+            connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
 
-        ws.send(Message::Text(serde_json::to_string(&ClientMessage::PrologueStart).unwrap().into()))
-            .await
-            .unwrap();
-        wait_for_sync(&mut ws, |st, sp| st == "IN_PROGRESS" && sp == "P0VillageEntry").await;
+        ws.send(Message::Text(
+            serde_json::to_string(&ClientMessage::PrologueStart)
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        wait_for_sync(&mut ws, |st, sp| {
+            st == "IN_PROGRESS" && sp == "P0VillageEntry"
+        })
+        .await;
 
         ws.send(Message::Text(
             serde_json::to_string(&ClientMessage::PrologueStepAction {
@@ -530,7 +641,10 @@ async fn test_m6_pro_007_file_storage_durability_across_gateway_restart() {
         ))
         .await
         .unwrap();
-        let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| st == "IN_PROGRESS" && sp == "P1ResourceGathering").await;
+        let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| {
+            st == "IN_PROGRESS" && sp == "P1ResourceGathering"
+        })
+        .await;
         assert_eq!(s, "IN_PROGRESS");
         assert_eq!(step, "P1ResourceGathering");
     }
@@ -538,14 +652,28 @@ async fn test_m6_pro_007_file_storage_durability_across_gateway_restart() {
     // Run instance 2 with the same storage dir (simulating complete gateway reboot/crash recovery)
     {
         let (ws_url, state) = setup_test_server(Some(temp_dir.clone())).await;
-        let (mut ws, _) = connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
+        let (mut ws, _) =
+            connect_and_auth(&ws_url, &state, account_id, actor_id, private_region_id).await;
 
-        ws.send(Message::Text(serde_json::to_string(&ClientMessage::PrologueQueryState).unwrap().into()))
-            .await
-            .unwrap();
-        let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| st == "IN_PROGRESS" && sp == "P1ResourceGathering").await;
-        assert_eq!(s, "IN_PROGRESS", "State must persist across gateway restart");
-        assert_eq!(step, "P1ResourceGathering", "Step must persist across gateway restart");
+        ws.send(Message::Text(
+            serde_json::to_string(&ClientMessage::PrologueQueryState)
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        let (s, step, _, _) = wait_for_sync(&mut ws, |st, sp| {
+            st == "IN_PROGRESS" && sp == "P1ResourceGathering"
+        })
+        .await;
+        assert_eq!(
+            s, "IN_PROGRESS",
+            "State must persist across gateway restart"
+        );
+        assert_eq!(
+            step, "P1ResourceGathering",
+            "Step must persist across gateway restart"
+        );
     }
 
     let _ = std::fs::remove_dir_all(&temp_dir);
