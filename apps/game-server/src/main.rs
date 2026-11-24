@@ -98,8 +98,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(config.server.http_listen).await?;
     tracing::info!(
         address = %listener.local_addr()?,
-        milestone = "M4",
-        "WSE M4 Simulation & Gateway Server listening"
+        milestone = "M5",
+        "WSE M5 Simulation & Gateway Server listening"
     );
 
     axum::serve(listener, app)
@@ -116,7 +116,7 @@ fn create_app_router(state: Arc<GatewayState>) -> Router {
             get(|| async {
                 Json(serde_json::json!({
                     "service": "wse-game-server",
-                    "milestone": "M4",
+                    "milestone": "M5",
                     "status": "live",
                     "reason": "process_running"
                 }))
@@ -127,7 +127,7 @@ fn create_app_router(state: Arc<GatewayState>) -> Router {
             get(|| async {
                 Json(serde_json::json!({
                     "service": "wse-game-server",
-                    "milestone": "M4",
+                    "milestone": "M5",
                     "status": "ready",
                     "reason": "simulation_and_persistence_active"
                 }))

@@ -201,6 +201,14 @@ export class GameClient {
     });
   }
 
+  public sendPurchase(itemId: number, price: number): string | null {
+    return this.sendCommand({
+      kind: 'purchase',
+      item_id: itemId,
+      price: price,
+    });
+  }
+
   public sendResyncRequest(reason: string = 'client_manual_resync'): void {
     this.send({
       type: 'resync_request',
@@ -392,6 +400,11 @@ export class GameClient {
 
       case 'prologue_transfer_result': {
         this.emit('prologue_transfer_result', msg.payload);
+        break;
+      }
+
+      case 'announcement': {
+        this.emit('announcement', msg.payload);
         break;
       }
 

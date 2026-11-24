@@ -280,6 +280,9 @@
             <button @click="handleAttackNearest" class="btn btn-warn btn-sm" :disabled="!isConnected">
               ⚔ Attack Nearest
             </button>
+            <button @click="handlePurchaseFood" class="btn btn-primary btn-sm" :disabled="!isConnected">
+              🛒 Buy Food (10G)
+            </button>
             <button @click="handleResync" class="btn btn-secondary btn-sm" :disabled="!isConnected">
               🔄 Force Resync
             </button>
@@ -638,6 +641,16 @@ async function handleConnect() {
     }
   });
 
+  client.on('announcement', (ann: { title: string; message: string }) => {
+    addLog(`📢 [${ann.title}] ${ann.message}`, 'info');
+    lastCommandFeedback.value = {
+      id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `ann-${Date.now()}`,
+      status: 'COMMITTED',
+      text: `[${ann.title}] ${ann.message}`,
+      timestamp: Date.now(),
+    };
+  });
+
   client.on('error', (err) => {
     addLog(`Socket error: ${err}`, 'error');
   });
@@ -709,6 +722,15 @@ function handleAttackNearest() {
     }
   } else {
     addLog('No target nearby to attack', 'warn');
+  }
+}
+
+function handlePurchaseFood() {
+  if (!client || !isConnected.value) return;
+  const cmdId = client.sendPurchase(1, 10);
+  if (cmdId) {
+    setCommandStatus(cmdId, 'PENDING', '식량 구매 요청 (10 Gold)');
+    addLog(`[상점] 식량 1개 구매 요청 (10 Gold, Command: ${cmdId.slice(0, 8)})`, 'info');
   }
 }
 

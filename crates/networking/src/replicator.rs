@@ -278,4 +278,19 @@ impl RegionReplicator {
         debug!(%session_id, "Handling client resync request");
         self.send_initial_snapshot(session_id, region_tick, all_entities)
     }
+
+    /// Broadcasts an arbitrary server message to all active sessions.
+    pub fn broadcast_message(&self, message: &ServerMessage) {
+        let sessions: Vec<SharedSession> = {
+            let s = self
+                .sessions
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            s.values().cloned().collect()
+        };
+
+        for session in sessions {
+            let _ = session.send_nonblocking(message.clone());
+        }
+    }
 }
