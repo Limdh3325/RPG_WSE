@@ -26,6 +26,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("configuration valid; no database connection or simulation started");
         return Ok(());
     }
+
+    if let Ok(db_url) = std::env::var("DATABASE_URL") {
+        tracing::info!(
+            "DATABASE_URL detected; initializing database pool and running migrations..."
+        );
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(config.persistence.pool_max_connections)
+            .connect(&db_url)
+            .await?;
+        persistence::apply_migration(&pool).await?;
+        tracing::info!("database migrations applied successfully; persistence layer ready");
+
+        // Query authoritative region from DB and execute recovery pipeline with unique instance lease
+        let instance_id = format!(
+            "game-server-{}-{}",
+            std::process::id(),
+            sqlx::types::Uuid::new_v4()
+        );
+        let region_opt: Option<(sqlx::types::Uuid,)> =
+            sqlx::query_as("SELECT id FROM regions ORDER BY created_at ASC LIMIT 1")
+                .fetch_optional(&pool)
+                .await?;
+
+        if let Some((region_id,)) = region_opt {
+            let recovered = persistence::RecoveryManager::recover_region(
+                &pool,
+                region_id,
+                &instance_id,
+                config.region.lease_seconds as i64,
+            )
+            .await?;
+            tracing::info!(
+                region_id = %recovered.region_id,
+                tick = recovered.tick,
+                epoch = recovered.epoch,
+                entities = recovered.state.entities.len(),
+                replayed_events = recovered.replayed_events_count,
+                instance_id = %instance_id,
+                "authoritative region recovered and leased successfully from persistence"
+            );
+        } else {
+            tracing::info!("no existing regions in database; bootstrap starting fresh world");
+        }
+    }
+
     let listener = tokio::net::TcpListener::bind(config.server.http_listen).await?;
     tracing::info!(address = %listener.local_addr()?, milestone = "M0", "bootstrap listening; readiness unavailable");
     axum_serve(listener).await?;

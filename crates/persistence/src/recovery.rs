@@ -1,7 +1,7 @@
 use crate::error::PersistenceError;
 use crate::lease::acquire_or_renew_lease;
 use crate::snapshot::{ScheduledActionDto, SnapshotManager};
-use game_domain::{RegionId, RegionStateDto};
+use game_domain::{EntityId, EntityStateDto, PositionDto, RegionId, RegionStateDto};
 use sqlx::PgPool;
 use tracing::info;
 use uuid::Uuid;
@@ -23,9 +23,10 @@ pub struct RecoveredRegionState {
 pub struct DomainEventRow {
     pub id: Uuid,
     pub event_seq: i64,
-    pub stream_type: String,
-    pub aggregate_id: Uuid,
     pub event_type: String,
+    pub schema_version: i32,
+    pub rules_version: i32,
+    pub tick: i64,
     pub payload_json: serde_json::Value,
 }
 
@@ -34,9 +35,9 @@ pub struct RecoveryManager;
 impl RecoveryManager {
     /// Executes the full region recovery pipeline:
     /// 1. Acquire/renew lease with new epoch
-    /// 2. Load latest verified snapshot (auto-fallback if corrupted)
+    /// 2. Load latest verified snapshot (auto-fallback if corrupted or incompatible)
     /// 3. Replay committed domain events with event_seq > snapshot.committed_event_seq
-    /// 4. Reconcile transient projection and scheduled actions
+    /// 4. Reconcile state via deterministic event reducer
     /// 5. Return clean RecoveredRegionState
     pub async fn recover_region(
         pool: &PgPool,
@@ -51,43 +52,69 @@ impl RecoveryManager {
         let verified_snapshot =
             SnapshotManager::load_latest_verified_snapshot(pool, region_id).await?;
 
-        let (mut tick, mut committed_event_seq, rng_seed, rng_step, mut state, scheduled_actions) =
-            if let Some((snapshot_id, snapshot)) = verified_snapshot {
-                info!(
-                    snapshot_id = %snapshot_id,
-                    region_id = %region_id,
-                    tick = snapshot.tick,
-                    event_seq = snapshot.committed_event_seq,
-                    "Restored base state from verified snapshot"
-                );
-                (
-                    snapshot.tick,
-                    snapshot.committed_event_seq,
-                    snapshot.rng_seed,
-                    snapshot.rng_step,
-                    snapshot.state,
-                    snapshot.scheduled_actions,
-                )
-            } else {
-                info!(
-                    region_id = %region_id,
-                    "No valid snapshot found; initializing fresh base state"
-                );
-                (
-                    0,
-                    0,
-                    12345,
-                    0,
-                    RegionStateDto {
-                        region_id: RegionId(region_id),
-                        epoch: new_epoch as u64,
-                        tick: 0,
-                        status: game_domain::RegionStatus::Active,
-                        entities: Vec::new(),
-                    },
-                    Vec::new(),
-                )
-            };
+        // Query authoritative region sequence from DB
+        let db_seq: i64 = {
+            use sqlx::Row;
+            let row = sqlx::query("SELECT durable_event_seq FROM regions WHERE id = $1")
+                .bind(region_id)
+                .fetch_one(pool)
+                .await?;
+            row.get("durable_event_seq")
+        };
+
+        let (
+            mut tick,
+            mut committed_event_seq,
+            rng_seed,
+            mut rng_step,
+            mut state,
+            mut scheduled_actions,
+        ) = if let Some((snapshot_id, snapshot)) = verified_snapshot {
+            if snapshot.committed_event_seq as i64 > db_seq {
+                return Err(PersistenceError::CorruptedSnapshot {
+                    snapshot_id,
+                    reason: format!(
+                        "Snapshot watermark {} exceeds DB durable_event_seq {}",
+                        snapshot.committed_event_seq, db_seq
+                    ),
+                });
+            }
+
+            info!(
+                snapshot_id = %snapshot_id,
+                region_id = %region_id,
+                tick = snapshot.tick,
+                event_seq = snapshot.committed_event_seq,
+                "Restored base state from verified snapshot"
+            );
+            (
+                snapshot.tick,
+                snapshot.committed_event_seq,
+                snapshot.rng_seed,
+                snapshot.rng_step,
+                snapshot.state,
+                snapshot.scheduled_actions,
+            )
+        } else {
+            info!(
+                region_id = %region_id,
+                "No valid snapshot found; initializing fresh base state"
+            );
+            (
+                0,
+                0,
+                12345,
+                0,
+                RegionStateDto {
+                    region_id: RegionId(region_id),
+                    epoch: new_epoch as u64,
+                    tick: 0,
+                    status: game_domain::RegionStatus::Active,
+                    entities: Vec::new(),
+                },
+                Vec::new(),
+            )
+        };
 
         // Always update the state epoch to the freshly acquired lease epoch
         state.epoch = new_epoch as u64;
@@ -95,10 +122,10 @@ impl RecoveryManager {
         // Step 3: Query committed domain events > snapshot event_seq
         let unapplied_events: Vec<DomainEventRow> = sqlx::query_as(
             r#"
-            SELECT id, event_seq, stream_type, aggregate_id, event_type, payload_json
+            SELECT event_id AS id, region_event_seq AS event_seq, event_type, schema_version, rules_version, tick, payload AS payload_json
             FROM domain_events
-            WHERE region_id = $1 AND event_seq > $2
-            ORDER BY event_seq ASC
+            WHERE region_id = $1 AND region_event_seq > $2
+            ORDER BY region_event_seq ASC
             "#,
         )
         .bind(region_id)
@@ -108,18 +135,187 @@ impl RecoveryManager {
 
         let replayed_events_count = unapplied_events.len();
 
-        // Step 4: Replay events idempotently into transient projection
+        // Step 4: Replay events into state using deterministic reducer
+        let mut expected_seq = committed_event_seq + 1;
         for event in unapplied_events {
-            // Reconcile and advance committed event seq
-            committed_event_seq = event.event_seq as u64;
+            // Verify event schema and rules version compatibility
+            if event.schema_version != crate::CURRENT_SCHEMA_VERSION as i32
+                || event.rules_version != crate::CURRENT_RULES_VERSION as i32
+            {
+                return Err(PersistenceError::IncompatibleVersion {
+                    reason: format!(
+                        "Domain event {} (type '{}', seq {}) has incompatible version: schema={} (expected {}), rules={} (expected {})",
+                        event.id,
+                        event.event_type,
+                        event.event_seq,
+                        event.schema_version,
+                        crate::CURRENT_SCHEMA_VERSION,
+                        event.rules_version,
+                        crate::CURRENT_RULES_VERSION
+                    ),
+                });
+            }
 
-            // In deterministic simulation, committed tick is advanced or entities updated
-            if let Some(event_tick) = event.payload_json.get("tick").and_then(|v| v.as_u64()) {
-                tick = tick.max(event_tick);
+            let ev_seq = event.event_seq as u64;
+            if ev_seq != expected_seq {
+                return Err(PersistenceError::RecoveryFailed(format!(
+                    "Non-contiguous event sequence during replay: expected {}, found {}",
+                    expected_seq, ev_seq
+                )));
+            }
+            expected_seq += 1;
+            committed_event_seq = ev_seq;
+            tick = tick.max(event.tick as u64);
+
+            match event.event_type.as_str() {
+                "ENTITY_TICK" => {
+                    rng_step = rng_step.saturating_add(1);
+                }
+                "ENTITY_SPAWNED" => {
+                    let entity_dto =
+                        serde_json::from_value::<EntityStateDto>(event.payload_json.clone())
+                            .map_err(|e| {
+                                PersistenceError::RecoveryFailed(format!(
+                                    "Failed to parse ENTITY_SPAWNED payload: {e}"
+                                ))
+                            })?;
+                    state.entities.retain(|e| e.id != entity_dto.id);
+                    state.entities.push(entity_dto);
+                }
+                "ENTITY_DESPAWNED" => {
+                    let parsed_id = event
+                        .payload_json
+                        .get("entity_id")
+                        .cloned()
+                        .map(serde_json::from_value::<EntityId>)
+                        .transpose()
+                        .map_err(|e| {
+                            PersistenceError::RecoveryFailed(format!(
+                                "Failed to parse ENTITY_DESPAWNED entity_id: {e}"
+                            ))
+                        })?
+                        .ok_or_else(|| {
+                            PersistenceError::RecoveryFailed(
+                                "ENTITY_DESPAWNED payload missing entity_id".into(),
+                            )
+                        })?;
+                    state.entities.retain(|e| e.id != parsed_id);
+                }
+                "ENTITY_MOVED" => {
+                    let parsed_id = event
+                        .payload_json
+                        .get("entity_id")
+                        .cloned()
+                        .map(serde_json::from_value::<EntityId>)
+                        .transpose()
+                        .map_err(|e| {
+                            PersistenceError::RecoveryFailed(format!(
+                                "Failed to parse ENTITY_MOVED entity_id: {e}"
+                            ))
+                        })?
+                        .ok_or_else(|| {
+                            PersistenceError::RecoveryFailed(
+                                "ENTITY_MOVED payload missing entity_id".into(),
+                            )
+                        })?;
+                    let new_pos = event
+                        .payload_json
+                        .get("position")
+                        .cloned()
+                        .map(serde_json::from_value::<PositionDto>)
+                        .transpose()
+                        .map_err(|e| {
+                            PersistenceError::RecoveryFailed(format!(
+                                "Failed to parse ENTITY_MOVED position: {e}"
+                            ))
+                        })?
+                        .ok_or_else(|| {
+                            PersistenceError::RecoveryFailed(
+                                "ENTITY_MOVED payload missing position".into(),
+                            )
+                        })?;
+
+                    if let Some(entity) = state.entities.iter_mut().find(|e| e.id == parsed_id) {
+                        entity.position = new_pos;
+                    }
+                }
+                "SCHEDULED_ACTION_CREATED" => {
+                    let action_dto =
+                        serde_json::from_value::<ScheduledActionDto>(event.payload_json.clone())
+                            .map_err(|e| {
+                                PersistenceError::RecoveryFailed(format!(
+                                    "Failed to parse SCHEDULED_ACTION_CREATED payload: {e}"
+                                ))
+                            })?;
+                    scheduled_actions.retain(|a| a.id != action_dto.id);
+                    scheduled_actions.push(action_dto);
+                }
+                "SCHEDULED_ACTION_COMPLETED" | "SCHEDULED_ACTION_CANCELLED" => {
+                    let action_id = event
+                        .payload_json
+                        .get("action_id")
+                        .cloned()
+                        .map(serde_json::from_value::<Uuid>)
+                        .transpose()
+                        .map_err(|e| {
+                            PersistenceError::RecoveryFailed(format!(
+                                "Failed to parse SCHEDULED_ACTION action_id: {e}"
+                            ))
+                        })?
+                        .ok_or_else(|| {
+                            PersistenceError::RecoveryFailed(
+                                "SCHEDULED_ACTION payload missing action_id".into(),
+                            )
+                        })?;
+                    scheduled_actions.retain(|a| a.id != action_id);
+                }
+                // Financial / asset / market transaction events: already materialized
+                // into Postgres tables (wallets, inventory_slots, settlement_market_stocks).
+                // They advance sequence/tick during replay without modifying in-memory ECS state.
+                "ItemPurchased"
+                | "GoldDeducted"
+                | "GoldAdded"
+                | "StockDeducted"
+                | "StockAdded"
+                | "WalletTransferred"
+                | "InventoryTransferred" => {}
+                unknown => {
+                    return Err(PersistenceError::RecoveryFailed(format!(
+                        "Unknown domain event type '{unknown}' during replay"
+                    )));
+                }
             }
         }
 
         state.tick = tick;
+
+        // Verify all events up to the authoritative region sequence were replayed (no missing tail)
+        if committed_event_seq != db_seq as u64 {
+            return Err(PersistenceError::RecoveryFailed(format!(
+                "Event tail missing during recovery: replayed up to sequence {}, but region durable_event_seq is {}",
+                committed_event_seq, db_seq
+            )));
+        }
+
+        // Verify that our lease is still valid and not stolen during recovery
+        crate::verify_lease_fencing(pool, region_id, new_epoch).await?;
+
+        // Verify restored invariants
+        if state.epoch != new_epoch as u64 {
+            return Err(PersistenceError::RecoveryFailed(
+                "Restored state epoch must match newly acquired lease epoch".into(),
+            ));
+        }
+        if state.region_id.0 != region_id {
+            return Err(PersistenceError::RecoveryFailed(
+                "Restored state region ID mismatch".into(),
+            ));
+        }
+        if state.status != game_domain::RegionStatus::Active {
+            return Err(PersistenceError::RecoveryFailed(
+                "Restored region state must be in ACTIVE status".into(),
+            ));
+        }
 
         Ok(RecoveredRegionState {
             region_id,

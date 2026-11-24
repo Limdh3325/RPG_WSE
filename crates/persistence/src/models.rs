@@ -21,9 +21,9 @@ impl ReceiptStatus {
     }
 
     pub fn from_str_loose(s: &str) -> Option<Self> {
-        match s {
+        match s.to_ascii_uppercase().as_str() {
             "PENDING" => Some(Self::Pending),
-            "SUCCEEDED" => Some(Self::Succeeded),
+            "SUCCEEDED" | "COMMITTED" => Some(Self::Succeeded),
             "FAILED" => Some(Self::Failed),
             "REJECTED" => Some(Self::Rejected),
             _ => None,
@@ -36,11 +36,11 @@ pub struct CommandReceiptRecord {
     pub command_id: Uuid,
     pub world_id: Uuid,
     pub region_id: Uuid,
-    pub actor_id: Uuid,
-    pub payload_hash: Vec<u8>,
+    pub actor_id: Option<Uuid>,
     pub status: ReceiptStatus,
+    pub payload_hash: Vec<u8>,
     pub committed_tick: Option<i64>,
-    pub result_json: Option<serde_json::Value>,
+    pub result_json: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,23 +58,23 @@ pub enum DurableOperation {
         unit_price: i64,
     },
     InventoryTransfer {
-        entity_id: Uuid,
-        slot_index: i16,
-        item_id: Option<Uuid>,
+        owner_entity_id: Uuid,
         sku: String,
-        quantity: i32,
-        durability: i16,
+        quantity_delta: i64,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DurableEvent {
-    pub id: Uuid,
-    pub stream_type: String,
-    pub aggregate_id: Uuid,
+    pub event_id: Uuid,
     pub event_type: String,
-    pub topic: String,
+    pub schema_version: i32,
+    pub rules_version: i32,
+    pub tick: i64,
+    pub causation_event_id: Option<Uuid>,
+    pub correlation_id: Uuid,
     pub payload: serde_json::Value,
+    pub outbox_topic: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,10 +82,10 @@ pub struct DurableIntent {
     pub command_id: Uuid,
     pub world_id: Uuid,
     pub region_id: Uuid,
+    pub actor_id: Option<Uuid>,
     pub ownership_epoch: i64,
-    pub actor_id: Uuid,
     pub payload_hash: [u8; 32],
-    pub tick: u64,
+    pub tick: i64,
     pub operations: Vec<DurableOperation>,
     pub emitted_events: Vec<DurableEvent>,
 }
@@ -96,5 +96,5 @@ pub struct PersistenceAck {
     pub region_id: Uuid,
     pub status: ReceiptStatus,
     pub committed_seq: Option<i64>,
-    pub result_json: serde_json::Value,
+    pub error_code: Option<String>,
 }

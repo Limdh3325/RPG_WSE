@@ -1,8 +1,9 @@
 use crate::error::PersistenceError;
+use crate::lease::verify_lease_fencing_tx;
 use game_domain::RegionStateDto;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -10,7 +11,7 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 pub const CURRENT_ENGINE_VERSION: &str = "0.1.0";
 pub const CURRENT_RULES_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScheduledActionDto {
     pub id: Uuid,
     pub entity_id: Option<Uuid>,
@@ -19,7 +20,7 @@ pub struct ScheduledActionDto {
     pub payload: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotDto {
     pub region_id: Uuid,
     pub tick: u64,
@@ -34,7 +35,7 @@ pub struct SnapshotDto {
     pub scheduled_actions: Vec<ScheduledActionDto>,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow)]
 pub struct SnapshotRow {
     pub id: Uuid,
     pub region_id: Uuid,
@@ -51,17 +52,74 @@ pub struct SnapshotRow {
 pub struct SnapshotManager;
 
 impl SnapshotManager {
-    /// Serializes the snapshot DTO, calculates the SHA-256 checksum,
-    /// and persists it to the `region_snapshots` table.
+    /// Saves a snapshot with lease fencing and version validation.
+    /// Delegates to `save_snapshot_fenced` using `dto.ownership_epoch`.
     pub async fn save_snapshot(pool: &PgPool, dto: &SnapshotDto) -> Result<Uuid, PersistenceError> {
+        Self::save_snapshot_fenced(pool, dto, dto.ownership_epoch).await
+    }
+
+    /// Fenced snapshot persistence: verifies ownership epoch against lease and establishes watermark consistency.
+    pub async fn save_snapshot_fenced(
+        pool: &PgPool,
+        dto: &SnapshotDto,
+        expected_epoch: i64,
+    ) -> Result<Uuid, PersistenceError> {
+        // 0. Verify version compatibility
+        if dto.schema_version != CURRENT_SCHEMA_VERSION
+            || dto.engine_version != CURRENT_ENGINE_VERSION
+            || dto.rules_version != CURRENT_RULES_VERSION
+        {
+            return Err(PersistenceError::IncompatibleVersion {
+                reason: format!(
+                    "Snapshot versions (schema: {}, engine: {}, rules: {}) do not match current engine versions (schema: {}, engine: {}, rules: {})",
+                    dto.schema_version,
+                    dto.engine_version,
+                    dto.rules_version,
+                    CURRENT_SCHEMA_VERSION,
+                    CURRENT_ENGINE_VERSION,
+                    CURRENT_RULES_VERSION
+                ),
+            });
+        }
+
+        // 1. Verify that DTO epoch matches expected fencing epoch
+        if dto.ownership_epoch != expected_epoch {
+            return Err(PersistenceError::LeaseFencingFailed {
+                region_id: dto.region_id,
+                expected_epoch,
+                actual_epoch: Some(dto.ownership_epoch),
+            });
+        }
+
+        let mut tx = pool.begin().await?;
+
+        // 2. Verify lease fencing against database
+        verify_lease_fencing_tx(&mut tx, dto.region_id, expected_epoch).await?;
+
+        // 3. Invariant: Watermark must not exceed actual database sequence
+        let db_seq: i64 = {
+            let row = sqlx::query("SELECT durable_event_seq FROM regions WHERE id = $1 FOR UPDATE")
+                .bind(dto.region_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            row.get("durable_event_seq")
+        };
+
+        if dto.committed_event_seq as i64 > db_seq {
+            return Err(PersistenceError::InvalidOperation(format!(
+                "Snapshot watermark {} exceeds region durable_event_seq {}",
+                dto.committed_event_seq, db_seq
+            )));
+        }
+
+        // 4. Serialize and save
+        let snapshot_id = Uuid::new_v4();
         let payload =
             serde_json::to_vec(dto).map_err(|e| PersistenceError::Serialization(e.to_string()))?;
 
         let mut hasher = Sha256::new();
         hasher.update(&payload);
-        let sha256_hash: Vec<u8> = hasher.finalize().to_vec();
-
-        let snapshot_id = Uuid::new_v4();
+        let sha256_hash = hasher.finalize().to_vec();
 
         sqlx::query(
             r#"
@@ -81,14 +139,16 @@ impl SnapshotManager {
         .bind(dto.rules_version as i32)
         .bind(&sha256_hash)
         .bind(&payload)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
+        tx.commit().await?;
         Ok(snapshot_id)
     }
 
-    /// Loads the latest snapshot that passes SHA-256 checksum verification and JSON deserialization.
-    /// If the latest snapshot is corrupted, it logs a warning and falls back to the previous valid snapshot (TEST-PER-004).
+    /// Loads the latest snapshot that passes SHA-256 checksum verification, version compatibility,
+    /// region identity matching, and JSON deserialization.
+    /// If corrupted or incompatible, it logs a warning and falls back to the previous valid snapshot.
     pub async fn load_latest_verified_snapshot(
         pool: &PgPool,
         region_id: Uuid,
@@ -106,13 +166,40 @@ impl SnapshotManager {
         .fetch_all(pool)
         .await?;
 
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
+        let mut had_incompatible_snapshot = false;
+        let mut had_corrupted_snapshot = false;
+        let mut first_corrupted_id = None;
+
         for row in rows {
-            // Check SHA-256
+            // 0. Verify region identity
+            if row.region_id != region_id {
+                had_corrupted_snapshot = true;
+                if first_corrupted_id.is_none() {
+                    first_corrupted_id = Some(row.id);
+                }
+                warn!(
+                    snapshot_id = %row.id,
+                    expected_region = %region_id,
+                    actual_region = %row.region_id,
+                    "Snapshot region ID mismatch; skipping"
+                );
+                continue;
+            }
+
+            // 1. Verify SHA-256 checksum
             let mut hasher = Sha256::new();
             hasher.update(&row.payload);
             let calculated_hash = hasher.finalize().to_vec();
 
             if calculated_hash != row.sha256 {
+                had_corrupted_snapshot = true;
+                if first_corrupted_id.is_none() {
+                    first_corrupted_id = Some(row.id);
+                }
                 warn!(
                     snapshot_id = %row.id,
                     tick = row.tick,
@@ -121,10 +208,58 @@ impl SnapshotManager {
                 continue;
             }
 
-            // Attempt deserialization
+            // 2. Verify version compatibility with current runtime.
+            // Incompatible snapshots are skipped to allow falling back to an earlier valid snapshot.
+            if row.schema_version != CURRENT_SCHEMA_VERSION as i32
+                || row.rules_version != CURRENT_RULES_VERSION as i32
+                || row.engine_version != CURRENT_ENGINE_VERSION
+            {
+                had_incompatible_snapshot = true;
+                warn!(
+                    snapshot_id = %row.id,
+                    tick = row.tick,
+                    schema_version = row.schema_version,
+                    engine_version = %row.engine_version,
+                    rules_version = row.rules_version,
+                    "Snapshot has incompatible versions; falling back to earlier snapshot"
+                );
+                continue;
+            }
+
+            // 3. Attempt deserialization & internal version/region validation
             match serde_json::from_slice::<SnapshotDto>(&row.payload) {
-                Ok(dto) => return Ok(Some((row.id, dto))),
+                Ok(dto) => {
+                    if dto.region_id != region_id {
+                        had_corrupted_snapshot = true;
+                        if first_corrupted_id.is_none() {
+                            first_corrupted_id = Some(row.id);
+                        }
+                        warn!(
+                            snapshot_id = %row.id,
+                            "Snapshot DTO region_id mismatch; falling back to earlier snapshot"
+                        );
+                        continue;
+                    }
+
+                    if dto.schema_version != CURRENT_SCHEMA_VERSION
+                        || dto.rules_version != CURRENT_RULES_VERSION
+                        || dto.engine_version != CURRENT_ENGINE_VERSION
+                    {
+                        had_incompatible_snapshot = true;
+                        warn!(
+                            snapshot_id = %row.id,
+                            tick = row.tick,
+                            "Snapshot DTO internal versions incompatible; falling back to earlier snapshot"
+                        );
+                        continue;
+                    }
+                    return Ok(Some((row.id, dto)));
+                }
                 Err(err) => {
+                    had_corrupted_snapshot = true;
+                    if first_corrupted_id.is_none() {
+                        first_corrupted_id = Some(row.id);
+                    }
                     warn!(
                         snapshot_id = %row.id,
                         tick = row.tick,
@@ -134,6 +269,22 @@ impl SnapshotManager {
                     continue;
                 }
             }
+        }
+
+        // If snapshots existed in the database, but none were valid and compatible:
+        // do not silently fall back to empty genesis state!
+        if had_incompatible_snapshot {
+            return Err(PersistenceError::IncompatibleVersion {
+                reason: "Found snapshot(s) with incompatible schema/engine/rules version, but no earlier compatible snapshot exists".into(),
+            });
+        }
+
+        if had_corrupted_snapshot {
+            let snap_id = first_corrupted_id.unwrap_or_else(Uuid::nil);
+            return Err(PersistenceError::CorruptedSnapshot {
+                snapshot_id: snap_id,
+                reason: "All existing snapshots failed checksum or payload validation; cannot reset to genesis".into(),
+            });
         }
 
         Ok(None)

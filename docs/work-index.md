@@ -10,3 +10,7 @@
 | WORK-20261116-01 | TASK-004 Command & Event Contracts | [요청](../inbox/WORK-20261116-01.md) | [결과](../outbox/WORK-20261116-01.md) | DONE | 미통합 (feature 브랜치) | 현재 발견 없음 |
 | WORK-20261116-02 | TASK-005 Movement + Combat Minimal Systems | [요청](../inbox/WORK-20261116-02.md) | [결과](../outbox/WORK-20261116-02.md) | DONE | 미통합 (feature 브랜치) | 현재 발견 없음 |
 | WORK-20261116-03 | TASK-006 Tokio Region Worker / Coordinator | [요청](../inbox/WORK-20261116-03.md) | [결과](../outbox/WORK-20261116-03.md) | DONE | 미통합 (feature 브랜치) | 현재 발견 없음 |
+| WORK-20261120-01 | TASK-007/008 8차 적대적 코드 리뷰 및 P1 3건 해결 | [요청](../inbox/WORK-20261120-01.md) | [결과](../outbox/WORK-20261120-01.md) | DONE | 조치 완료 (9차 검증 진행) | 현재 발견 없음 |
+| WORK-20261120-02 | TASK-007/008 9차 적대적 코드 리뷰 및 P1 2건·M3 게이트 해결 | [요청](../inbox/WORK-20261120-02.md) | [결과](../outbox/WORK-20261120-02.md) | DONE | 조치 완료 (10차 최종 검증 준비) | 현재 발견 없음 |
+| WORK-20261120-03 | TASK-007/008 10차 적대적 코드 리뷰 및 P1 3건 해결 | [요청](../inbox/WORK-20261120-03.md) | [결과](../outbox/WORK-20261120-03.md) | DONE | 조치 완료 (11차 최종 검증 준비) | 현재 발견 없음 |
+| WORK-20261120-04 | TASK-007/008 11차 적대적 코드 리뷰 및 최종 승인 | [요청](../inbox/WORK-20261120-04.md) | [결과](../outbox/WORK-20261120-04.md) | DONE | APPROVED (병합 대기) | 현재 발견 없음 |
