@@ -38,12 +38,15 @@ pub struct InboundCommand {
     pub payload: WireCommandPayload,
 }
 
+use crate::simulation::SettlementSimulation;
+
 #[derive(Clone)]
 pub struct GatewayState {
     pub ticket_store: TicketStore,
     pub replicators: Arc<RwLock<HashMap<Uuid, Arc<RegionReplicator>>>>,
     pub command_sender: Option<mpsc::Sender<InboundCommand>>,
     pub prologue_manager: Arc<Mutex<PrologueManager>>,
+    pub simulation: Option<Arc<SettlementSimulation>>,
 }
 
 impl GatewayState {
@@ -64,7 +67,20 @@ impl GatewayState {
             replicators: Arc::new(RwLock::new(HashMap::new())),
             command_sender,
             prologue_manager: Arc::new(Mutex::new(prologue_manager)),
+            simulation: None,
         }
+    }
+
+    pub fn with_simulation(mut self, simulation: Arc<SettlementSimulation>) -> Self {
+        self.simulation = Some(simulation);
+        self
+    }
+
+    pub fn with_settlement_simulation(mut self, region_id: Uuid) -> Self {
+        let replicator = self.get_or_create_replicator(region_id);
+        let sim = Arc::new(SettlementSimulation::new(region_id, replicator));
+        self.simulation = Some(sim);
+        self
     }
 
     pub fn get_or_create_replicator(&self, region_id: Uuid) -> Arc<RegionReplicator> {
@@ -256,6 +272,15 @@ async fn handle_socket(socket: WebSocket, state: Arc<GatewayState>) {
         let _ = ws_sender.close().await;
     });
 
+    if let Some(ref sim) = state.simulation {
+        if sim.region_id == effective_region_id {
+            sim.register_player(ticket_data.actor_id, None);
+            let entities = sim.get_all_entities();
+            let current_tick = sim.current_tick();
+            let _ = replicator.send_initial_snapshot(&session_id, current_tick, &entities);
+        }
+    }
+
     // 4. Incoming message pump
     let mut rate_limiter = CommandRateLimiter::new(MAX_COMMANDS_PER_SECOND);
     let session_for_cleanup = session.clone();
@@ -293,7 +318,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<GatewayState>) {
             }
             ClientMessage::ResyncRequest { reason, .. } => {
                 debug!(%session_id, %reason, "Client requested resync");
-                let _ = replicator.handle_resync(&session_id, 0, &[]);
+                if let Some(ref sim) = state.simulation {
+                    let entities = sim.get_all_entities();
+                    let current_tick = sim.current_tick();
+                    let _ = replicator.handle_resync(&session_id, current_tick, &entities);
+                } else {
+                    let _ = replicator.handle_resync(&session_id, 0, &[]);
+                }
             }
             ClientMessage::Command {
                 command_id,
@@ -328,8 +359,18 @@ async fn handle_socket(socket: WebSocket, state: Arc<GatewayState>) {
                     continue;
                 }
 
-                // Dispatch to engine command channel if configured
-                if let Some(ref tx) = state.command_sender {
+                // Dispatch to engine simulation or command channel if configured
+                if let Some(ref sim) = state.simulation {
+                    let cmd = InboundCommand {
+                        session_id,
+                        command_id,
+                        actor_id,
+                        region_id: session.region_id(),
+                        payload,
+                    };
+                    let status_msg = sim.apply_command(&session, cmd);
+                    let _ = session.send_nonblocking(status_msg);
+                } else if let Some(ref tx) = state.command_sender {
                     let cmd = InboundCommand {
                         session_id,
                         command_id,
@@ -511,6 +552,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<GatewayState>) {
         rep.remove_session(&session_for_cleanup.session_id);
     } else {
         replicator_for_cleanup.remove_session(&session_for_cleanup.session_id);
+    }
+    if let Some(ref sim) = state.simulation {
+        sim.unregister_player(&session_for_cleanup.actor_id);
     }
     outgoing_task.abort();
     info!(%session_id, "Session disconnected and cleaned up");

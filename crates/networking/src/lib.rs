@@ -9,12 +9,14 @@ pub mod aoi;
 pub mod gateway;
 pub mod replicator;
 pub mod session;
+pub mod simulation;
 pub mod ticket;
 
 pub use aoi::{AoiFilter, CELL_SIZE, CellCoord, INTEREST_RADIUS_CELLS};
 pub use gateway::{AUTH_TIMEOUT, GatewayState, InboundCommand, create_gateway_router};
 pub use replicator::RegionReplicator;
 pub use session::{CommandRateLimiter, Session, SessionError, SharedSession};
+pub use simulation::{DEFAULT_SETTLEMENT_REGION_ID, SettlementSimulation};
 pub use ticket::{DEFAULT_TICKET_TTL, TicketData, TicketStore};
 
 #[derive(Serialize)]
