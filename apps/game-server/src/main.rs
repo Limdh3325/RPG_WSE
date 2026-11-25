@@ -42,6 +42,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    let mut settlement_region_id = RegionId(DEFAULT_SETTLEMENT_REGION_ID);
+    let mut epoch = 1u64;
+    let mut seed = 12345u64;
+    let mut restored_state: Option<game_domain::RegionStateDto> = None;
+    let mut db_pool: Option<sqlx::PgPool> = None;
+    let mut lease_owner_id: Option<String> = None;
+
     if let Ok(db_url) = std::env::var("DATABASE_URL") {
         tracing::info!(
             "DATABASE_URL detected; initializing database pool and running migrations..."
@@ -81,16 +88,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 instance_id = %instance_id,
                 "authoritative region recovered and leased successfully from persistence"
             );
+            settlement_region_id = RegionId(recovered.region_id);
+            epoch = recovered.epoch as u64;
+            seed = recovered.rng_seed;
+            restored_state = Some(recovered.state);
+            lease_owner_id = Some(instance_id);
         } else {
             tracing::info!("no existing regions in database; bootstrap starting fresh world");
         }
+        db_pool = Some(pool);
     }
 
     // 1. Initialize RegionCoordinator and spawn authoritative settlement RegionWorker
     let coordinator = Arc::new(RegionCoordinator::new());
-    let settlement_region_id = RegionId(DEFAULT_SETTLEMENT_REGION_ID);
-    let epoch = 1;
-    let seed = 12345;
     let tick_interval = Duration::from_millis(1000 / config.simulation.tick_rate_hz as u64);
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1024);
 
@@ -104,8 +114,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         settlement_region_id,
     ));
 
-    let _region_handle = coordinator
-        .spawn_region_configured(
+    let region_handle = coordinator
+        .spawn_region_with_restored_state(
             settlement_region_id,
             epoch,
             ecs_components::grid::MapGrid::default_64x64(),
@@ -113,6 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(event_tx),
             Some(hooks),
             Some(tick_interval),
+            restored_state,
         )
         .expect("failed to spawn settlement region worker");
 
@@ -165,6 +176,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
+
+    // 4. Persistence background workers: Lease renewal, Snapshotting, and Loot Intent Settlement
+    if let (Some(pool), Some(owner_id)) = (db_pool, lease_owner_id) {
+        let lease_pool = pool.clone();
+        let region_uuid = settlement_region_id.0;
+        let lease_owner = owner_id.clone();
+        let renew_secs = config.region.lease_renew_seconds.max(1);
+        let lease_ttl = config.region.lease_seconds;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(renew_secs));
+            loop {
+                interval.tick().await;
+                match persistence::acquire_or_renew_lease(&lease_pool, region_uuid, &lease_owner, lease_ttl as i64).await {
+                    Ok(renewed_epoch) => {
+                        tracing::trace!(region_id = %region_uuid, epoch = renewed_epoch, "region lease renewed");
+                    }
+                    Err(e) => {
+                        tracing::error!(region_id = %region_uuid, error = %e, "failed to renew region lease");
+                    }
+                }
+            }
+        });
+
+        let snapshot_pool = pool.clone();
+        let snapshot_handle = region_handle.clone();
+        let snapshot_secs = config.region.snapshot_interval_seconds.max(5);
+        let snapshot_epoch = epoch as i64;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(snapshot_secs));
+            loop {
+                interval.tick().await;
+                match snapshot_handle.capture_snapshot().await {
+                    Ok(dto) => {
+                        let snap_dto = persistence::SnapshotDto {
+                            region_id: dto.region_id.0,
+                            tick: dto.tick,
+                            committed_event_seq: 0,
+                            ownership_epoch: snapshot_epoch,
+                            schema_version: persistence::CURRENT_SCHEMA_VERSION,
+                            engine_version: persistence::CURRENT_ENGINE_VERSION.to_string(),
+                            rules_version: persistence::CURRENT_RULES_VERSION,
+                            rng_seed: seed,
+                            rng_step: dto.tick,
+                            state: dto.clone(),
+                            scheduled_actions: Vec::new(),
+                        };
+                        match persistence::SnapshotManager::save_snapshot_fenced(&snapshot_pool, &snap_dto, snapshot_epoch).await {
+                            Ok(snap_id) => {
+                                tracing::info!(region_id = %dto.region_id.0, tick = dto.tick, snapshot_id = %snap_id, "periodic snapshot persisted");
+                            }
+                            Err(e) => {
+                                tracing::warn!(region_id = %dto.region_id.0, error = %e, "failed to persist periodic snapshot");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to capture snapshot from region worker");
+                    }
+                }
+            }
+        });
+    }
 
     let app = create_app_router(state);
 

@@ -62,6 +62,7 @@ pub enum ControlMessage {
     Shutdown,
     ShutdownDrain(oneshot::Sender<Vec<DurableLootIntent>>),
     DrainIntents(oneshot::Sender<Vec<DurableLootIntent>>),
+    CaptureSnapshot(oneshot::Sender<game_domain::RegionStateDto>),
     SetTestTickDelay(Duration),
     InspectStatus(oneshot::Sender<RegionWorkerStatus>),
 }
@@ -116,6 +117,17 @@ impl RegionHandle {
     /// Returns all unacknowledged durable loot intents extracted during shutdown.
     pub fn drained_intents(&self) -> Vec<DurableLootIntent> {
         self.drained_intents.read().unwrap().clone()
+    }
+
+    /// Captures the canonical state snapshot from the worker asynchronously.
+    pub async fn capture_snapshot(&self) -> Result<game_domain::RegionStateDto, String> {
+        let (tx, rx) = oneshot::channel();
+        self.control_tx
+            .send(ControlMessage::CaptureSnapshot(tx))
+            .await
+            .map_err(|e| format!("failed to send capture snapshot control message: {e}"))?;
+        rx.await
+            .map_err(|e| format!("failed to receive snapshot response from worker: {e}"))
     }
 }
 
@@ -218,6 +230,11 @@ impl RegionWorker {
     /// Sets simulation phase hooks (e.g. integrated AI, economy, and dynamic event systems).
     pub fn set_hooks(&mut self, hooks: Box<dyn crate::hook::SimulationPhaseHooks>) {
         self.hooks = hooks;
+    }
+
+    /// Restores region state from a canonical snapshot.
+    pub fn restore_state(&mut self, state: game_domain::RegionStateDto) -> Result<(), game_domain::DomainError> {
+        self.engine.restore_canonical_state(state)
     }
 
     /// Sets custom tick interval (useful for faster deterministic testing).
@@ -363,6 +380,10 @@ impl RegionWorker {
                 ControlMessage::DrainIntents(resp_tx) => {
                     let intents = self.engine.drain_pending_loot_intents();
                     let _ = resp_tx.send(intents);
+                }
+                ControlMessage::CaptureSnapshot(resp_tx) => {
+                    let snapshot = self.engine.world.export_canonical();
+                    let _ = resp_tx.send(snapshot);
                 }
                 ControlMessage::SetTestTickDelay(delay) => {
                     self.test_tick_delay = delay;

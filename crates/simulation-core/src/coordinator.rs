@@ -45,6 +45,9 @@ pub enum CoordinatorError {
     #[error("unknown region: {0:?}")]
     UnknownRegion(RegionId),
 
+    #[error("failed to restore region state: {0}")]
+    StateRestoreFailed(String),
+
     #[error("worker communication failed: {0}")]
     WorkerCommunication(String),
 }
@@ -101,7 +104,7 @@ impl RegionCoordinator {
         Ok(handle)
     }
 
-    /// Spawns and manages a new RegionWorker configured with custom simulation hooks and tick interval.
+    /// Spawns and manages a new RegionWorker configured with custom simulation hooks, tick interval, and optional restored state.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_region_configured(
         &self,
@@ -113,12 +116,42 @@ impl RegionCoordinator {
         hooks: Option<Box<dyn crate::hook::SimulationPhaseHooks>>,
         tick_interval: Option<Duration>,
     ) -> Result<RegionHandle, CoordinatorError> {
+        self.spawn_region_with_restored_state(
+            region_id,
+            epoch,
+            map_grid,
+            seed,
+            event_tx,
+            hooks,
+            tick_interval,
+            None,
+        )
+    }
+
+    /// Spawns and manages a new RegionWorker configured with custom simulation hooks, tick interval, and restored canonical state.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_region_with_restored_state(
+        &self,
+        region_id: RegionId,
+        epoch: u64,
+        map_grid: MapGrid,
+        seed: u64,
+        event_tx: Option<Sender<TickOutput>>,
+        hooks: Option<Box<dyn crate::hook::SimulationPhaseHooks>>,
+        tick_interval: Option<Duration>,
+        restored_state: Option<game_domain::RegionStateDto>,
+    ) -> Result<RegionHandle, CoordinatorError> {
         let mut regions = self.regions.write().unwrap();
         if regions.contains_key(&region_id) {
             return Err(CoordinatorError::RegionAlreadyExists(region_id));
         }
 
         let (mut worker, handle) = RegionWorker::new(region_id, epoch, map_grid, seed, event_tx);
+        if let Some(state) = restored_state {
+            worker
+                .restore_state(state)
+                .map_err(|e| CoordinatorError::StateRestoreFailed(e.to_string()))?;
+        }
         if let Some(h) = hooks {
             worker.set_hooks(h);
         }

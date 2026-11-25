@@ -100,6 +100,13 @@ impl SimulationEngine {
         }
     }
 
+    /// Restores engine world state from a canonical snapshot and adjusts clock.
+    pub fn restore_canonical_state(&mut self, state: game_domain::RegionStateDto) -> Result<(), game_domain::DomainError> {
+        self.world.import_canonical(state)?;
+        self.clock.current_tick = self.world.meta.tick;
+        Ok(())
+    }
+
     /// Acknowledges and settles a durable loot intent, removing it from pending and recording it as settled.
     pub fn acknowledge_loot_intent(&mut self, intent_id: Uuid) -> bool {
         if let Some(pos) = self
