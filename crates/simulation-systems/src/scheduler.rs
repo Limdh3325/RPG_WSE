@@ -24,6 +24,7 @@ impl Default for NpcSchedulerConfig {
 }
 
 /// Distributed scheduler for NPC evaluations.
+#[derive(Debug, Clone)]
 pub struct NpcScheduler {
     pub config: NpcSchedulerConfig,
 }

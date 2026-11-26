@@ -9,6 +9,11 @@ publish.workspace = true
 axum.workspace = true
 serde_json.workspace = true
 networking = { path = "../../crates/networking" }
+simulation-core = { path = "../../crates/simulation-core" }
+simulation-systems = { path = "../../crates/simulation-systems" }
+game-domain = { path = "../../crates/game-domain" }
+shared-protocol = { path = "../../crates/shared-protocol" }
+ecs-components = { path = "../../crates/ecs-components" }
 persistence = { path = "../../crates/persistence" }
 sqlx.workspace = true
 clap.workspace = true
@@ -18,6 +23,10 @@ tokio.workspace = true
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tokio-tungstenite = "0.28"
+futures-util = "0.3"
 
 [lints]
 workspace = true

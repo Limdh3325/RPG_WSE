@@ -1132,3 +1132,64 @@ fn test_urgent_threat_cancels_pending_command_and_discards_superseded_outcome() 
     );
     assert_eq!(agent.current_goal, Some(NpcGoal::Flee));
 }
+
+#[test]
+fn test_integrated_hooks_full_pipeline_tick_execution() {
+    use ecs_components::components::{CombatStats, Health, InventoryProjection, Needs, Personality, Position};
+    use ecs_components::region_world::RegionWorld;
+    use game_domain::state::InventorySlotDto;
+    use game_domain::id::{EntityId, RegionId, SessionId};
+    use simulation_core::engine::SimulationEngine;
+    use simulation_systems::economy::SettlementEconomy;
+    use simulation_systems::faction::FactionManager;
+    use simulation_systems::integrated_hooks::IntegratedSimulationHooks;
+    use simulation_systems::rule_dsl::DynamicRuleRegistry;
+
+    let region_id = RegionId::from_u128(1);
+    let mut world = RegionWorld::new_default_64x64(region_id, 1);
+    let entity_id = EntityId::from_u128(42);
+
+    let bevy_entity = world.world.spawn((
+        Position {
+            x_millitile: 32_000,
+            y_millitile: 32_000,
+        },
+        Health::new(100, 100).unwrap(),
+        CombatStats::new(1000, 10, 2, 5),
+        Personality::default(),
+        Needs::new(600, 200, 1000),
+        InventoryProjection {
+            committed_version: 1,
+            slots: vec![InventorySlotDto {
+                slot_index: 0,
+                item_id: "gold_coin".to_string(),
+                quantity: 50,
+            }],
+        },
+    )).id();
+    world.index.insert(entity_id, bevy_entity).unwrap();
+
+    let mut engine = SimulationEngine::new(world, 4242);
+    let session_id = SessionId::from_u128(999);
+    let mut hooks = IntegratedSimulationHooks::new(
+        NpcAiSystem::default(),
+        NpcScheduler::default(),
+        SettlementEconomy::new_default(1),
+        FactionManager::default(),
+        DynamicRuleRegistry::default(),
+        session_id,
+        region_id,
+    );
+
+    // Run 5 ticks with hooks
+    let summary = engine
+        .run_ticks_with_hooks(5, &mut hooks)
+        .expect("pipeline execution must succeed");
+
+    assert_eq!(summary.total_ticks_executed, 5);
+    assert!(hooks.food_ledger.audit_conservation());
+    // Needs must have progressed in Phase 6
+    let entity_ref = engine.world.get_entity(entity_id).unwrap();
+    let updated_needs = engine.world.world.entity(entity_ref).get::<Needs>().unwrap();
+    assert!(updated_needs.hunger > 600, "Hunger should increase over ticks in Phase 6");
+}

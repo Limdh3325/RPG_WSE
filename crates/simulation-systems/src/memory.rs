@@ -8,6 +8,7 @@ use game_domain::EntityId;
 use uuid::Uuid;
 
 /// Helper manager for NPC memory operations.
+#[derive(Debug, Default, Clone, Copy)]
 pub struct MemoryManager;
 
 impl MemoryManager {

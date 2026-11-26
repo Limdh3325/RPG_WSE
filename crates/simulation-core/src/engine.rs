@@ -100,6 +100,13 @@ impl SimulationEngine {
         }
     }
 
+    /// Restores engine world state from a canonical snapshot and adjusts clock.
+    pub fn restore_canonical_state(&mut self, state: game_domain::RegionStateDto) -> Result<(), game_domain::DomainError> {
+        self.world.import_canonical(state)?;
+        self.clock.current_tick = self.world.meta.tick;
+        Ok(())
+    }
+
     /// Acknowledges and settles a durable loot intent, removing it from pending and recording it as settled.
     pub fn acknowledge_loot_intent(&mut self, intent_id: Uuid) -> bool {
         if let Some(pos) = self
@@ -252,8 +259,17 @@ impl SimulationEngine {
 
     /// Advances the simulation by exactly one tick, tracking telemetry for clock degradation.
     pub fn step(&mut self) -> Result<TickOutput, DomainError> {
+        let mut hooks = crate::hook::NoopSimulationHooks;
+        self.step_with_hooks(&mut hooks)
+    }
+
+    /// Advances the simulation by exactly one tick using custom phase hooks, tracking telemetry.
+    pub fn step_with_hooks(
+        &mut self,
+        hooks: &mut (impl crate::hook::SimulationPhaseHooks + ?Sized),
+    ) -> Result<TickOutput, DomainError> {
         let start = Instant::now();
-        let output = self.step_core()?;
+        let output = self.step_core(hooks)?;
         self.record_tick_telemetry(start.elapsed());
         Ok(output)
     }
@@ -263,7 +279,8 @@ impl SimulationEngine {
         &mut self,
         elapsed: std::time::Duration,
     ) -> Result<TickOutput, DomainError> {
-        let output = self.step_core()?;
+        let mut hooks = crate::hook::NoopSimulationHooks;
+        let output = self.step_core(&mut hooks)?;
         self.record_tick_telemetry(elapsed);
         Ok(output)
     }
@@ -278,7 +295,10 @@ impl SimulationEngine {
     }
 
     /// Executes the 10 canonical simulation phases sequentially.
-    fn step_core(&mut self) -> Result<TickOutput, DomainError> {
+    fn step_core(
+        &mut self,
+        hooks: &mut (impl crate::hook::SimulationPhaseHooks + ?Sized),
+    ) -> Result<TickOutput, DomainError> {
         let current_tick = self.clock.advance_tick();
         self.world.meta.tick = current_tick;
         self.event_budget.reset_tick();
@@ -1174,6 +1194,17 @@ impl SimulationEngine {
 
         // 5. NpcDecisions Phase: Scheduled tactical planning
         let mut executed_npc_decisions = 0;
+        let mut new_hook_commands = Vec::new();
+        let current_outcomes = self.deduplicator.get_all_statuses();
+        hooks.on_npc_decisions(
+            &mut self.world,
+            current_tick,
+            &mut executed_npc_decisions,
+            &mut events,
+            &mut new_hook_commands,
+            &current_outcomes,
+        );
+
         if self.npc_decision_interval > 0 && current_tick.is_multiple_of(self.npc_decision_interval)
         {
             for id in &sorted_entity_ids {
@@ -1208,11 +1239,26 @@ impl SimulationEngine {
             }
         }
 
+        for cmd in new_hook_commands {
+            self.command_queue.enqueue(cmd.to_ingress());
+        }
+
         // 6. WorldEconomy Phase: (Needs decay / market tick placeholder)
         let _ = TickPhase::WorldEconomy;
+        hooks.on_world_economy(&mut self.world, current_tick, &mut events);
 
         // 7. EventRules Phase: Trigger rules evaluation
         let _ = TickPhase::EventRules;
+        let mut event_rule_commands = Vec::new();
+        hooks.on_event_rules(
+            &mut self.world,
+            current_tick,
+            &mut events,
+            &mut event_rule_commands,
+        );
+        for cmd in event_rule_commands {
+            self.command_queue.enqueue(cmd.to_ingress());
+        }
         let mut event_envelopes: Vec<EventEnvelope> = events
             .iter()
             .enumerate()
@@ -1299,17 +1345,21 @@ impl SimulationEngine {
         format!("{result:x}")
     }
 
-    /// Executes multiple headless ticks synchronously without wall-clock sleep.
+    /// Executes multiple headless ticks synchronously without wall-clock sleep with phase hooks.
     ///
     /// # Errors
     /// Returns `DomainError` if any step returns an error.
-    pub fn run_ticks(&mut self, total_ticks: u64) -> Result<SimulationSummary, DomainError> {
+    pub fn run_ticks_with_hooks(
+        &mut self,
+        total_ticks: u64,
+        hooks: &mut impl crate::hook::SimulationPhaseHooks,
+    ) -> Result<SimulationSummary, DomainError> {
         let start_tick = self.clock.current_tick + 1;
         let mut total_events = 0;
         let mut last_hash = String::new();
 
         for _ in 0..total_ticks {
-            let output = self.step()?;
+            let output = self.step_with_hooks(hooks)?;
             total_events += output.events.len();
             last_hash = output.state_hash;
         }
@@ -1330,5 +1380,14 @@ impl SimulationEngine {
             clock_status: self.clock.status,
             npc_decision_counts: npc_counts,
         })
+    }
+
+    /// Executes multiple headless ticks synchronously without wall-clock sleep.
+    ///
+    /// # Errors
+    /// Returns `DomainError` if any step returns an error.
+    pub fn run_ticks(&mut self, total_ticks: u64) -> Result<SimulationSummary, DomainError> {
+        let mut hooks = crate::hook::NoopSimulationHooks;
+        self.run_ticks_with_hooks(total_ticks, &mut hooks)
     }
 }

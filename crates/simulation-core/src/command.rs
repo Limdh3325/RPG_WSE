@@ -342,6 +342,15 @@ impl TransientCommandDeduplicator {
         self.cache.get(&command_id).map(|(_, _, status, _)| *status)
     }
 
+    /// Returns a copy of all current command statuses in the deduplicator cache.
+    #[must_use]
+    pub fn get_all_statuses(&self) -> BTreeMap<CommandId, CommandStatus> {
+        self.cache
+            .iter()
+            .map(|(cmd_id, (_, _, status, _))| (*cmd_id, *status))
+            .collect()
+    }
+
     /// Number of commands currently tracked in cache.
     #[must_use]
     pub fn len(&self) -> usize {

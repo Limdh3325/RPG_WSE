@@ -62,6 +62,7 @@ pub enum ControlMessage {
     Shutdown,
     ShutdownDrain(oneshot::Sender<Vec<DurableLootIntent>>),
     DrainIntents(oneshot::Sender<Vec<DurableLootIntent>>),
+    CaptureSnapshot(oneshot::Sender<game_domain::RegionStateDto>),
     SetTestTickDelay(Duration),
     InspectStatus(oneshot::Sender<RegionWorkerStatus>),
 }
@@ -117,6 +118,17 @@ impl RegionHandle {
     pub fn drained_intents(&self) -> Vec<DurableLootIntent> {
         self.drained_intents.read().unwrap().clone()
     }
+
+    /// Captures the canonical state snapshot from the worker asynchronously.
+    pub async fn capture_snapshot(&self) -> Result<game_domain::RegionStateDto, String> {
+        let (tx, rx) = oneshot::channel();
+        self.control_tx
+            .send(ControlMessage::CaptureSnapshot(tx))
+            .await
+            .map_err(|e| format!("failed to send capture snapshot control message: {e}"))?;
+        rx.await
+            .map_err(|e| format!("failed to receive snapshot response from worker: {e}"))
+    }
 }
 
 /// Dedicated region worker executing deterministic simulation ticks on an OS thread.
@@ -131,6 +143,7 @@ pub struct RegionWorker {
     ack_rx: Receiver<PersistenceAck>,
     command_rx: Receiver<CommandEnvelope>,
     event_tx: Option<Sender<TickOutput>>,
+    hooks: Box<dyn crate::hook::SimulationPhaseHooks>,
     tick_interval: Duration,
     lag_threshold: Duration,
     test_tick_delay: Duration,
@@ -187,6 +200,7 @@ impl RegionWorker {
             ack_rx,
             command_rx: cmd_rx,
             event_tx,
+            hooks: Box::new(crate::hook::NoopSimulationHooks),
             tick_interval: Duration::from_millis(DEFAULT_TICK_INTERVAL_MS),
             lag_threshold: Duration::from_millis(LAG_THRESHOLD_MS),
             test_tick_delay: Duration::ZERO,
@@ -211,6 +225,16 @@ impl RegionWorker {
     /// Direct access to inner simulation engine (for testing / initial population).
     pub fn engine_mut(&mut self) -> &mut SimulationEngine {
         &mut self.engine
+    }
+
+    /// Sets simulation phase hooks (e.g. integrated AI, economy, and dynamic event systems).
+    pub fn set_hooks(&mut self, hooks: Box<dyn crate::hook::SimulationPhaseHooks>) {
+        self.hooks = hooks;
+    }
+
+    /// Restores region state from a canonical snapshot.
+    pub fn restore_state(&mut self, state: game_domain::RegionStateDto) -> Result<(), game_domain::DomainError> {
+        self.engine.restore_canonical_state(state)
     }
 
     /// Sets custom tick interval (useful for faster deterministic testing).
@@ -269,7 +293,7 @@ impl RegionWorker {
             if self.test_tick_delay > Duration::ZERO {
                 std::thread::sleep(self.test_tick_delay);
             }
-            match self.engine.step() {
+            match self.engine.step_with_hooks(&mut *self.hooks) {
                 Ok(output) => {
                     let step_duration = step_start.elapsed();
                     let step_duration_ms = step_duration.as_millis() as u64;
@@ -356,6 +380,10 @@ impl RegionWorker {
                 ControlMessage::DrainIntents(resp_tx) => {
                     let intents = self.engine.drain_pending_loot_intents();
                     let _ = resp_tx.send(intents);
+                }
+                ControlMessage::CaptureSnapshot(resp_tx) => {
+                    let snapshot = self.engine.world.export_canonical();
+                    let _ = resp_tx.send(snapshot);
                 }
                 ControlMessage::SetTestTickDelay(delay) => {
                     self.test_tick_delay = delay;
